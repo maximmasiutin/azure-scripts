@@ -5,7 +5,7 @@ $Static = "Static";
 foreach ($PublicIP in $IPs) {
     $Method = $PublicIP.PublicIpAllocationMethod;
     $Name = $PublicIP.Name;
-    if ($Method = $Static) {
+    if ($Method -eq $Static) {
         $message = "The method of " + $Name + " is already " + $Static;
         Write-Progress -Activity $message;
     }
@@ -14,9 +14,9 @@ foreach ($PublicIP in $IPs) {
         $PublicIP.PublicIpAllocationMethod = $Static;
         Set-AzPublicIpAddress -PublicIpAddress $PublicIP;
         Write-Progress -Activity "Querying the method of "+$Name+"...";
-        $ModifiedAddress = Get-AzPublicIpAddress -Name $Name -ResourceGroupName $PublicIP.ResourceGroupName -Location $PublicIP.Location
+        $ModifiedAddress = Get-AzPublicIpAddress -Name $Name -ResourceGroupName $PublicIP.ResourceGroupName
         $NewMethod = $ModifiedAddress.PublicIpAllocationMethod;
-        if ($NewMethod = $Static) {
+        if ($NewMethod -eq $Static) {
             Write-Output "The method for "+$Name+" has successfully changed to "+$Static;
         }
         else {
