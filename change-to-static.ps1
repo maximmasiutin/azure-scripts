@@ -20,7 +20,7 @@ foreach ($PublicIP in $IPs) {
             Write-Output "The method for $Name has successfully changed to $Static";
         }
         else {
-            Write-Error -Message "Cannot change the method for $Name to $Static, it is still $NewMethod!!!;
+            Write-Error -Message "Cannot change the method for $Name to $Static, it is still $NewMethod!!!";
         }
     }
 }
