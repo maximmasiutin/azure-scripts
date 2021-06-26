@@ -6,21 +6,20 @@ foreach ($PublicIP in $IPs) {
     $Method = $PublicIP.PublicIpAllocationMethod;
     $Name = $PublicIP.Name;
     if ($Method -eq $Static) {
-        $message = "The method of $Name is already $Static";
-        Write-Progress -Activity $message;
+        Write-Output "The method of $Name is already $Static.";
     }
     else {
-        Write-Progress -Activity "Changing the method of $Name from $Method to $Static ...";
         $PublicIP.PublicIpAllocationMethod = $Static;
-        Set-AzPublicIpAddress -PublicIpAddress $PublicIP;
+        Write-Progress -Activity "Changing the method of $Name from $Method to $Static ...";
+        Set-AzPublicIpAddress -PublicIpAddress $PublicIP | Out-null;
         Write-Progress -Activity "Querying the method of $Name ...";
         $ModifiedAddress = Get-AzPublicIpAddress -Name $Name -ResourceGroupName $PublicIP.ResourceGroupName
         $NewMethod = $ModifiedAddress.PublicIpAllocationMethod;
         if ($NewMethod -eq $Static) {
-            Write-Output "The method for $Name has successfully changed to $Static";
+            Write-Output "The method for $Name has successfully changed to $Static.";
         }
         else {
-            Write-Error -Message "Cannot change the method for $Name to $Static, it is still $NewMethod!!!";
+            Write-Error -Message "Cannot change the method for $Name to $Static, it is still $NewMethod!";
         }
     }
 }
