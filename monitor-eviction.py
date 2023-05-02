@@ -1,10 +1,14 @@
 #!/usr/bin/python3
 
-from time import sleep
-from os import uname, system
-from platform import node
-from requests import get
+# monitor-eviction.py
+# Copyright 2023 by Maxim Masiutin. All rights reserved.
+
 import json
+from os import system, uname
+from platform import node
+from time import sleep
+
+from requests import get
 
 serviceToStop = "fishtest"
 metadataUrl = "http://169.254.169.254/metadata/scheduledevents"
