@@ -1,3 +1,4 @@
+vm-spot-price.py eol=lf
 monitor-eviction.py eol=lf
 README.md eol=lf
 LICENSE eol=lf
