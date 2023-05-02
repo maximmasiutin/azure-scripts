@@ -1,4 +1,6 @@
+# change-ip-to-static.ps1
 # Change all public IP addresses from Dynamic to Static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure would not take your IP address but will keep it. And when you turn it on, it will boot with the same IP.
+# Copyright 2022 by Maxim Masiutin. All rights reserved.
 
 $IPs = Get-AzPublicIpAddress;
 $Static = "Static";
