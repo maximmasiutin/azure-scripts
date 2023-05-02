@@ -1,1 +1,3 @@
 monitor-eviction.py eol=lf
+README.md eol=lf
+LICENSE eol=lf
