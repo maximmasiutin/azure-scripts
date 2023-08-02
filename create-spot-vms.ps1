@@ -10,8 +10,11 @@ $vmNumberTo = 16 # Creates 16 virtual machines called from vm1 to vm16
 $ResourceGroupName = 'MyResourceGroup'
 $LocationName = 'eastus'
 $vmSize = 'Standard_D4as_v5'
+$diskStorageAccountType = 'Standard_LRS'
 $diskImageOffer = '0001-com-ubuntu-minimal-jammy'
 $diskImageSku = 'minimal-22_04-lts-gen2'
+$diskImagePublisher = 'Canonical'
+$diskImageVersion = 'latest'
 $securityType = 'TrustedLaunch'
 $NetworkName = 'MyNet'
 $SubnetName = 'MySubnet'
@@ -75,10 +78,10 @@ $Credential = New-Object System.Management.Automation.PSCredential ($VMLocalAdmi
   if (-not ([string]::IsNullOrEmpty($securityType))) {
     $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $securityType
   }
-  $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName 'Canonical' -Offer $diskImageOffer -Skus $diskImageSku -Version 'latest'
+  $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $diskImagePublisher -Offer $diskImageOffer -Skus $diskImageSku -Version $diskImageVersion
   $vmConfig = Add-AzVMNetworkInterface -VM $vmConfig -Id $NIC.Id -DeleteOption "Delete"
   $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmName -Credential $Credential
-  $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "OsDisk$_" -DeleteOption "Delete" -Linux -StorageAccountType "Standard_LRS" -CreateOption "FromImage"
+  $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "OsDisk$_" -DeleteOption "Delete" -Linux -StorageAccountType $diskStorageAccountType -CreateOption "FromImage"
 
   $Status = "Creating new VM from config"
   Write-Progress -Activity $Activity -Status $Status
