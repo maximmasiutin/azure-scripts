@@ -1,5 +1,5 @@
-# create-spot-vms.ps1 
-# Creates a series of Azure VM spot instances automatically 
+# create-spot-vms.ps1
+# Creates a series of Azure VM spot instances automatically
 # Copyright 2023 by Maxim Masiutin. All rights reserved.
 
 
@@ -36,7 +36,7 @@ $VMLocalAdminPassword = (Get-AzKeyVaultSecret -VaultName $VaultName -ResourceGro
 $SecretName = 'vmScriptUrl'
 $VMLocalScriptUrl = (Get-AzKeyVaultSecret -VaultName $VaultName -ResourceGroupName $KeyVaultResourceGroupName -Name $SecretName).SecretValueText
 # It will download the script from the specified URL, save it to 1.bash, make it executable, run it saving the stdout to and stderr to 1-log.txt and 2-log txt, respectively, then delete the script and and reboot the VM
-$VMLocalScriptLine = "cd /tmp/;wget $VMLocalScriptUrl;chmod +x 1.bash;sudo ./1.bash 1>1-log.txt 2>2-log.txt;rm ./1.bash;sudo reboot" 
+$VMLocalScriptLine = "cd /tmp/;wget $VMLocalScriptUrl;chmod +x 1.bash;sudo ./1.bash 1>1-log.txt 2>2-log.txt;rm ./1.bash;sudo reboot"
 
 
 # Actions
@@ -77,7 +77,7 @@ $subnetId = $Vnet.Subnets[0].Id
 
 # Create a credential object for the virtual machines that we will create and store it in the $Credential variable for later use
 $VMLocalAdminSecurePassword = ConvertTo-SecureString $VMLocalAdminPassword -AsPlainText -Force
-$Credential = New-Object System.Management.Automation.PSCredential ($VMLocalAdminUsername, $VMLocalAdminSecurePassword); 
+$Credential = New-Object System.Management.Automation.PSCredential ($VMLocalAdminUsername, $VMLocalAdminSecurePassword);
 
 # Main loop to create the virtual machines
 ($vmNumberFrom..$vmNumberTo) | foreach-object {
