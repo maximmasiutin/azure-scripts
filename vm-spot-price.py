@@ -58,7 +58,7 @@ def main():
             windows_suffix = " Windows"
         else:
             if not SEARCH_VMLINUX:
-                exit("Both sEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
+                exit("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
         query = (
             query
             + " and productName eq 'Virtual Machines {series} Series{windows_suffix}'".format(
