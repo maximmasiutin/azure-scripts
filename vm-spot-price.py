@@ -15,8 +15,8 @@ from tabulate import tabulate
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
 
-SEARCH_VMSIZE = "16"
-SEARCH_VMPATTERN = "D#as_v5"
+SEARCH_VMSIZE = "8"
+SEARCH_VMPATTERN = "B#s_v2"
 SEARCH_VMWINDOWS = False
 SEARCH_VMLINUX = True
 
@@ -47,7 +47,7 @@ def main():
     series = SEARCH_VMPATTERN.replace("#", "").replace("_", "")
 
     api_url = (
-        "https://prices.azure.com/api/retail/prices?api-version=2023-01-01-preview"
+        "https://prices.azure.com/api/retail/prices"
     )
     query = "armSkuName eq 'Standard_{sku}' and contains(meterName, 'Spot') and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'".format(
         sku=sku
