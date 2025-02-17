@@ -1,4 +1,4 @@
-vm-spot-price.py eol=lf
-monitor-eviction.py eol=lf
+*.py eol=lf
+*.ps1 eof=crlf
 README.md eol=lf
 LICENSE eol=lf
