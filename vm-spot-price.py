@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # vm-spot-price.py
-# Copyright 2023 by Maxim Masiutin. All rights reserved.
+# Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
 
 # Returns sorted (by VM spot price) list of Azure regions
 # Based on the code example from https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices
@@ -27,14 +27,13 @@ def key_value(arg):
 
 def build_pricing_table(json_data, table_data):
     for item in json_data["Items"]:
-        meter = item["meterName"]
         table_data.append(
             [
                 item["armSkuName"],
                 item["retailPrice"],
                 item["unitOfMeasure"],
                 item["armRegionName"],
-                meter,
+                item["meterName"],
                 item["productName"],
             ]
         )
@@ -79,12 +78,8 @@ def main():
         build_pricing_table(json_data, table_data)
 
     table_data.sort(key=key_value)
-    table_data.insert(
-        0, ["SKU", "Retail Price", "Unit of Measure",
-            "Region", "Meter", "Product Name"]
-    )
 
-    print(tabulate(table_data, headers="firstrow", tablefmt="psql"))
+    print(tabulate(table_data, headers=["SKU", "Retail Price", "Unit of Measure", "Region", "Meter", "Product Name"], tablefmt="psql"))
 
 
 if __name__ == "__main__":
