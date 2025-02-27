@@ -8,6 +8,7 @@
 
 from json import loads
 from sys import exit
+from argparse import ArgumentParser
 
 from requests import get
 from tabulate import tabulate
@@ -15,6 +16,8 @@ from tabulate import tabulate
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
 
+
+# Default options
 SEARCH_VMSIZE = "8"
 SEARCH_VMPATTERN = "B#s_v2"
 SEARCH_VMWINDOWS = False
@@ -42,7 +45,12 @@ def build_pricing_table(json_data, table_data):
 def main():
     table_data = []
 
-    sku = SEARCH_VMPATTERN.replace("#", SEARCH_VMSIZE)
+    parser = ArgumentParser(description='Get Azure VM spot prices')
+    parser.add_argument('--cpu', default=SEARCH_VMSIZE,
+                      help='Number of CPUs (default: %(default)s)')
+    args = parser.parse_args()
+    
+    sku = SEARCH_VMPATTERN.replace("#", args.cpu)
     series = SEARCH_VMPATTERN.replace("#", "").replace("_", "")
 
     api_url = (
