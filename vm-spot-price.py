@@ -81,7 +81,7 @@ def main():
         next_page = json_data["NextPageLink"]
         build_pricing_table(json_data, table_data)
 
-    table_data.sort(key=lambda x: x[1]) # the element [1] is retail price
+    table_data.sort(key=lambda x: float(x[1])) # the element [1] is retail price
 
     print(tabulate(table_data, headers=["SKU", "Retail Price", "Unit of Measure", "Region", "Meter", "Product Name"], tablefmt="psql"))
 
