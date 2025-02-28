@@ -23,8 +23,11 @@ SEARCH_VMPATTERN = "B#s_v2"
 SEARCH_VMWINDOWS = False
 SEARCH_VMLINUX = True
 
-def build_pricing_table(json_data, table_data):
+def build_pricing_table(json_data, table_data, non_spot):
     for item in json_data["Items"]:
+        if non_spot:
+            if "Spot" in item["meterName"]:
+                continue    
         table_data.append(
             [
                 item["armSkuName"],
@@ -43,18 +46,20 @@ def main():
     parser = ArgumentParser(description='Get Azure VM spot prices')
     parser.add_argument('--cpu', default=SEARCH_VMSIZE,type=int, help='Number of CPUs (default: %(default)s)')
     parser.add_argument('--pattern', default=SEARCH_VMPATTERN,type=str, help='VM instance size pattern (default: %(default)s)')
+    parser.add_argument('--non-spot', action='store_true', help='Only return non-spot instances')
     args = parser.parse_args()
     
     pattern = args.pattern
     sku = pattern.replace("#", str(args.cpu))
     series = pattern.replace("#", "").replace("_", "")
+    non_spot = args.non_spot
 
     api_url = (
         "https://prices.azure.com/api/retail/prices"
     )
-    query = "armSkuName eq 'Standard_{sku}' and contains(meterName, 'Spot') and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'".format(
-        sku=sku
-    )
+    query = "armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'".format(sku=sku)
+    if not non_spot:
+        query += " and contains(meterName, 'Spot')" 
     if not (SEARCH_VMWINDOWS and SEARCH_VMLINUX):
         windows_suffix = ""
         if SEARCH_VMWINDOWS:
@@ -72,7 +77,7 @@ def main():
     response = get(api_url, params={"$filter": query})
     json_data = loads(response.text)
 
-    build_pricing_table(json_data, table_data)
+    build_pricing_table(json_data, table_data, non_spot)
     next_page = json_data["NextPageLink"]
 
     while next_page:
