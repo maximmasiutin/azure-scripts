@@ -7,7 +7,8 @@
 # Based on the code example from https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices
 
 
-import json
+from json import loads
+from argparse import ArgumentParser
 from collections import defaultdict
 from sys import exit
 from requests import get
@@ -21,7 +22,7 @@ def fetch_azure_prices(params):
         response = get(api_url, params=params)
         if response.status_code != 200:
             exit(f"Error fetching data: {response.status_code}")
-        data = json.loads(response.text)
+        data = loads(response.text)
         items.extend(data.get('Items', []))
         next_page = data.get('NextPageLink', None)
         if not next_page:
@@ -34,8 +35,33 @@ def fetch_azure_prices(params):
 def main():
     print("Requesting Azure blob storage price data, please stand by...")
 
+    default_blob_types_array = [
+        "Standard Page Blob v2",
+        "Standard Page Blob",
+        "General Block Blob",
+        "Blob Storage",
+        "Premium Block Blob",
+        "General Block Blob v2"
+    ]
+
+    default_blob_types_string = ','.join(default_blob_types_array)
+
+    parser = ArgumentParser(description='Calculate Azure blob storage prices by region')
+    parser.add_argument('--blob-types', 
+                       default=default_blob_types_string, 
+                       help=f'Comma-separated list of blob types (default: %(default)s)')
+    args = parser.parse_args()
+
+    blob_types_array = [t.strip() for t in args.blob_types.split(',')]
+
+
+    if len(blob_types_array)<1:
+        exit("No blob types specified")
+
+
+    product_filter = " or ".join(f"productName eq '{blob_type}'" for blob_type in blob_types_array)
     params = {
-        "$filter": "(productName eq 'Standard Page Blob v2' or productName eq 'Standard Page Blob' or productName eq 'General Block Blob' or productName eq 'Blob Storage' or productName eq 'Premium Block Blob' or productName eq 'General Block Blob v2') and priceType eq 'Consumption' and serviceName eq 'Storage'"
+        "$filter": f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
     }
 
     items = fetch_azure_prices(params)
@@ -129,8 +155,15 @@ def main():
     # Sort regions by average storage price ascending
     region_avg_prices.sort(key=lambda x: x[1])
 
-    print("\nAverage blob storage services price per region:")
-    headers = ["Region", "Average Blob Storage Price (USD)"]
+    if len(blob_types_array)>1:
+        table_caption  = "Average blob storage services ({services}) price per region".format(services=", ".join(blob_types_array))
+        price_header = "Average Price (USD)"
+    else:
+        table_caption = "Blob storage service ({service}) price per region".format(service=blob_types_array[0])
+        price_header = "Average Price (USD)"
+    
+    print("\n" + table_caption)
+    headers = ["Region", price_header]
     print(tabulate(region_avg_prices, headers=headers, tablefmt="psql"))
 
 if __name__ == "__main__":
