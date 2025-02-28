@@ -6,6 +6,11 @@
 # Returns sorted (by VM spot price) list of Azure regions
 # Based on the code example from https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices
 
+# Examples of use:
+#   python vm-spot-price.py --cpu 4 --skupattern "B#s_v2"
+#   python vm-spot-price.py --cpu 4 --skupattern "B#ls_v2" --seriespattern "Bsv2"
+#   python vm-spot-price.py --skupattern "B4ls_v2" --seriespattern "Bsv2"
+
 from json import loads
 from sys import exit
 from argparse import ArgumentParser
@@ -45,13 +50,16 @@ def main():
 
     parser = ArgumentParser(description='Get Azure VM spot prices')
     parser.add_argument('--cpu', default=SEARCH_VMSIZE,type=int, help='Number of CPUs (default: %(default)s)')
-    parser.add_argument('--pattern', default=SEARCH_VMPATTERN,type=str, help='VM instance size pattern (default: %(default)s)')
+    parser.add_argument('--skupattern', default=SEARCH_VMPATTERN,type=str, help='VM instance size SKU pattern (default: %(default)s)')
+    parser.add_argument('--seriespattern', default=SEARCH_VMPATTERN,type=str, help='VM instance size Series pattern (optional)')
     parser.add_argument('--non-spot', action='store_true', help='Only return non-spot instances')
     args = parser.parse_args()
     
-    pattern = args.pattern
-    sku = pattern.replace("#", str(args.cpu))
-    series = pattern.replace("#", "").replace("_", "")
+    skupattern = args.skupattern
+    seriespattern = args.seriespattern
+    if not seriespattern: seriespattern = skupattern
+    sku = skupattern.replace("#", str(args.cpu))
+    series = seriespattern.replace("#", "").replace("_", "")
     non_spot = args.non_spot
 
     api_url = (
