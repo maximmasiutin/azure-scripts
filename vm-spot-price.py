@@ -23,11 +23,6 @@ SEARCH_VMPATTERN = "B#s_v2"
 SEARCH_VMWINDOWS = False
 SEARCH_VMLINUX = True
 
-
-def key_value(arg):
-    return arg[1]
-
-
 def build_pricing_table(json_data, table_data):
     for item in json_data["Items"]:
         table_data.append(
@@ -46,12 +41,13 @@ def main():
     table_data = []
 
     parser = ArgumentParser(description='Get Azure VM spot prices')
-    parser.add_argument('--cpu', default=SEARCH_VMSIZE,
-                      help='Number of CPUs (default: %(default)s)')
+    parser.add_argument('--cpu', default=SEARCH_VMSIZE,type=int, help='Number of CPUs (default: %(default)s)')
+    parser.add_argument('--pattern', default=SEARCH_VMPATTERN,type=str, help='VM instance size pattern (default: %(default)s)')
     args = parser.parse_args()
     
-    sku = SEARCH_VMPATTERN.replace("#", args.cpu)
-    series = SEARCH_VMPATTERN.replace("#", "").replace("_", "")
+    pattern = args.pattern
+    sku = pattern.replace("#", str(args.cpu))
+    series = pattern.replace("#", "").replace("_", "")
 
     api_url = (
         "https://prices.azure.com/api/retail/prices"
@@ -85,7 +81,7 @@ def main():
         next_page = json_data["NextPageLink"]
         build_pricing_table(json_data, table_data)
 
-    table_data.sort(key=key_value)
+    table_data.sort(key=lambda x: x[1]) # the element [1] is retail price
 
     print(tabulate(table_data, headers=["SKU", "Retail Price", "Unit of Measure", "Region", "Meter", "Product Name"], tablefmt="psql"))
 
