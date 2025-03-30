@@ -3,96 +3,129 @@
 # blob-storage-price.py
 # Copyright 2025 by Maxim Masiutin. All rights reserved.
 
-# Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc)
-# Based on the code example from https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices
-
-from typing import List, Dict, Tuple, Optional, Set, Any
-from json import loads
-from argparse import ArgumentParser, Namespace
+from typing import List, Dict, Tuple, Optional, Set
+import json
+from argparse import ArgumentParser
 from collections import defaultdict
-from sys import exit
-from requests import get, Response
+import sys
+import requests
 from tabulate import tabulate
 
-def fetch_azure_prices(params: Optional[Dict[str, str]]) -> List[Dict[str, Any]]:
-    api_url: str = "https://prices.azure.com/api/retail/prices"
 
-    items: List[Dict[str, Any]] = []
+def fetch_azure_prices(params: Optional[Dict[str, str]]) -> List[Dict[str, any]]:
+    """Fetch Azure retail prices from the API."""
+    api_url = "https://prices.azure.com/api/retail/prices"
+    items = []
+
     while True:
-        response: Response = get(api_url, params=params)
+        response = requests.get(api_url, params=params)
         if response.status_code != 200:
-            exit(f"Error fetching data: {response.status_code}")
-        data: Dict[str, Any] = loads(response.text)
-        items.extend(data.get('Items', []))
-        next_page: Optional[str] = data.get('NextPageLink', None)
-        if not next_page:
+            sys.exit(f"Error fetching data: {response.status_code}")
+        data = response.json()
+        items.extend(data.get("Items", []))
+        api_url = data.get("NextPageLink")
+        if not api_url:
             break
-        api_url = next_page
         params = None  # Clear params for subsequent requests
 
     return items
 
-def main() -> None:
-    print("Requesting Azure blob storage price data, please stand by...")
 
-    default_blob_types_array: List[str] = [
+def parse_arguments() -> Tuple[List[str], Dict[str, str]]:
+    """Parse command-line arguments."""
+    default_blob_types = [
         "Standard Page Blob v2",
         "Standard Page Blob",
         "General Block Blob",
         "Blob Storage",
         "Premium Block Blob",
-        "General Block Blob v2"
+        "General Block Blob v2",
     ]
 
-    default_blob_types_string: str = ','.join(default_blob_types_array)
+    parser = ArgumentParser(description="Calculate Azure blob storage prices by region")
+    parser.add_argument(
+        "--blob-types",
+        default=",".join(default_blob_types),
+        help="Comma-separated list of blob types (default: %(default)s)",
+    )
+    args = parser.parse_args()
 
-    parser: ArgumentParser = ArgumentParser(description='Calculate Azure blob storage prices by region')
-    parser.add_argument('--blob-types', 
-                       default=default_blob_types_string, 
-                       help=f'Comma-separated list of blob types (default: %(default)s)')
-    args: Namespace = parser.parse_args()
+    blob_types = [t.strip() for t in args.blob_types.split(",")]
+    if not blob_types:
+        sys.exit("No blob types specified")
 
-    blob_types_array: List[str] = [t.strip() for t in args.blob_types.split(',')]
-
-    if len(blob_types_array) < 1:
-        exit("No blob types specified")
-
-    product_filter: str = " or ".join(f"productName eq '{blob_type}'" for blob_type in blob_types_array)
-    params: Dict[str, str] = {
+    product_filter = " or ".join(f"productName eq '{blob_type}'" for blob_type in blob_types)
+    params = {
         "$filter": f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
     }
 
-    items: List[Dict[str, Any]] = fetch_azure_prices(params)
-    print(f"Total items fetched: {len(items)}")
+    return blob_types, params
 
-    service_regions: Dict[Tuple[str, str, str], Set[str]] = defaultdict(set)
-    service_prices: Dict[Tuple[str, str, str], Dict[str, float]] = defaultdict(dict)
-    all_regions: Set[str] = set()
-    all_services: Set[Tuple[str, str, str]] = set()
-    excluded_regions: Set[str] = set()
+
+def process_items(items: List[Dict[str, any]]) -> Tuple[
+    Dict[Tuple[str, str, str], Set[str]],
+    Dict[Tuple[str, str, str], Dict[str, float]],
+    Set[str],
+    Set[str],
+]:
+    """Process fetched items to extract regions, services, and prices."""
+    service_regions = defaultdict(set)
+    service_prices = defaultdict(dict)
+    all_regions = set()
+    excluded_regions = set()
 
     for item in items:
-        armRegionName: str = item.get('armRegionName', '')
-        if not armRegionName or armRegionName.lower() == 'global':
-            excluded_regions.add(armRegionName or 'Unknown')  # Collect excluded region names
-            continue  # Skip items without a region or with region 'Global'
+        region = item.get("armRegionName", "").lower()
+        if not region or region == "global":
+            excluded_regions.add(region or "Unknown")
+            continue
 
-        productName: str = item.get('productName', '')
-        skuName: str = item.get('skuName', '')
-        meterName: str = item.get('meterName', '')
-        retailPrice: float = item.get('retailPrice', 0.0)
+        product_name = item.get("productName", "")
+        sku_name = item.get("skuName", "")
+        meter_name = item.get("meterName", "")
+        retail_price = item.get("retailPrice", 0.0)
 
-        service_key: Tuple[str, str, str] = (productName, skuName, meterName)
+        service_key = (product_name, sku_name, meter_name)
+        service_regions[service_key].add(region)
+        service_prices[service_key][region] = retail_price
+        all_regions.add(region)
 
-        service_regions[service_key].add(armRegionName)
-        service_prices[service_key][armRegionName] = retailPrice
+    return service_regions, service_prices, all_regions, excluded_regions
 
-        all_regions.add(armRegionName)
-        all_services.add(service_key)
 
-    print(f"Total regions found (excluding 'Global'): {len(all_regions)}")
-    print(f"Total services found: {len(all_services)}")
+def calculate_region_prices(
+    service_regions: Dict[Tuple[str, str, str], Set[str]],
+    service_prices: Dict[Tuple[str, str, str], Dict[str, float]],
+    all_regions: Set[str],
+) -> Dict[str, List[float]]:
+    """Calculate prices for each region."""
+    region_prices = defaultdict(list)
 
+    for service, regions in service_regions.items():
+        for region in all_regions:
+            price = service_prices[service].get(region)
+            if price is not None:
+                region_prices[region].append(price)
+
+    return region_prices
+
+
+def calculate_average_prices(region_prices: Dict[str, List[float]]) -> List[Tuple[str, float]]:
+    """Calculate average prices for each region."""
+    region_avg_prices = [
+        (region, sum(prices) / len(prices))
+        for region, prices in region_prices.items()
+        if prices
+    ]
+    return sorted(region_avg_prices, key=lambda x: x[1])
+
+
+def print_results(
+    blob_types: List[str],
+    region_avg_prices: List[Tuple[str, float]],
+    excluded_regions: Set[str],
+) -> None:
+    """Print the results in a tabular format."""
     if excluded_regions:
         print("\nExcluded regions:")
         for region in excluded_regions:
@@ -100,64 +133,32 @@ def main() -> None:
     else:
         print("\nNo regions were excluded.")
 
-    services_in_all_regions: List[Tuple[str, str, str]] = [
-        service for service, regions in service_regions.items()
-        if regions == all_regions
-    ]
-
-    if services_in_all_regions:
-        print(f"\nNumber of services available in all regions: {len(services_in_all_regions)}")
-    else:
-        print("\nNo services are available in all regions.")
-        max_regions: int = max(len(regions) for regions in service_regions.values())
-        services_in_max_regions: List[Tuple[str, str, str]] = [
-            service for service, regions in service_regions.items()
-            if len(regions) == max_regions
-        ]
-        print(f"Using services available in {max_regions} regions.")
-        services_in_all_regions = services_in_max_regions
-        regions_with_max_services: Set[str] = set.intersection(
-            *(service_regions[service] for service in services_in_all_regions)
-        )
-        all_regions = regions_with_max_services
-        print(f"Adjusted total regions: {len(all_regions)}")
-
-    region_prices: Dict[str, List[float]] = defaultdict(list)
-
-    for service in services_in_all_regions:
-        for region in all_regions:
-            price: Optional[float] = service_prices[service].get(region, None)
-            if price is not None:
-                region_prices[region].append(price)
-            else:
-                print(f"Price missing for service {service} in region {region}")
-
-    region_avg_prices: List[Tuple[str, float]] = []
-
-    for region in all_regions:
-        prices: List[float] = region_prices.get(region, [])
-        if prices:
-            average_price: float = sum(prices) / len(prices)
-            region_avg_prices.append((region, average_price))
-        else:
-            print(f"No prices collected for region {region}")
-
-    region_avg_prices.sort(key=lambda x: x[1])
-
-    if len(blob_types_array) > 1:
-        table_caption: str = "Average blob storage services ({services}) price per region".format(
-            services=", ".join(blob_types_array)
-        )
-        price_header: str = "Average Price (USD)"
-    else:
-        table_caption = "Blob storage service ({service}) price per region".format(
-            service=blob_types_array[0]
-        )
-        price_header = "Average Price (USD)"
-    
+    table_caption = (
+        f"Average blob storage services ({', '.join(blob_types)}) price per region"
+        if len(blob_types) > 1
+        else f"Blob storage service ({blob_types[0]}) price per region"
+    )
     print("\n" + table_caption)
-    headers: List[str] = ["Region", price_header]
+    headers = ["Region", "Average Price (USD)"]
     print(tabulate(region_avg_prices, headers=headers, tablefmt="psql"))
+
+
+def main() -> None:
+    print("Requesting Azure blob storage price data, please stand by...")
+
+    blob_types, params = parse_arguments()
+    items = fetch_azure_prices(params)
+    print(f"Total items fetched: {len(items)}")
+
+    service_regions, service_prices, all_regions, excluded_regions = process_items(items)
+    print(f"Total regions found (excluding 'Global'): {len(all_regions)}")
+    print(f"Total services found: {len(service_regions)}")
+
+    region_prices = calculate_region_prices(service_regions, service_prices, all_regions)
+    region_avg_prices = calculate_average_prices(region_prices)
+
+    print_results(blob_types, region_avg_prices, excluded_regions)
+
 
 if __name__ == "__main__":
     main()
