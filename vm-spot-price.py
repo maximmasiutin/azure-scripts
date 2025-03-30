@@ -9,7 +9,10 @@
 # Examples of use:
 #   python vm-spot-price.py --cpu 4 --skupattern "B#s_v2"
 #   python vm-spot-price.py --cpu 4 --skupattern "B#ls_v2" --seriespattern "Bsv2"
+
+#   python vm-spot-price.py --skupattern "B8s_v2" --seriespattern "Bsv2" --non-spot
 #   python vm-spot-price.py --skupattern "B4ls_v2" --seriespattern "Bsv2"
+#   python vm-spot-price.py --skupattern "B2ts_v2" --seriespattern "Bsv2"
 
 from json import loads
 from sys import exit
