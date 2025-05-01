@@ -11,3 +11,4 @@
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
 
 1. **create-spot-vms.ps1**: Creates a series of Azure VM spot instances automatically.
+1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
