@@ -1,4 +1,4 @@
 *.py eol=lf
 *.ps1 eof=crlf
-README.md eol=lf
+*.md eol=lf
 LICENSE eol=lf
