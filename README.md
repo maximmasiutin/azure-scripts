@@ -12,3 +12,4 @@
 
 1. **create-spot-vms.ps1**: Creates a series of Azure VM spot instances automatically.
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
+1. **monitor-stddev.py**: Monitors an URL by doing requests at specific intervals and publishes results to a static Azure website or to local files, and can use Azure CosmosDB as an intermediate data storage, see [monitor-stddev.md] for details.  
