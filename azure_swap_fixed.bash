@@ -59,7 +59,7 @@ validate_system() {
 sanitize_path() {
     local path="$1"
     # Remove any dangerous characters and normalize
-    path="${path//[;<>|&\$`]/_}"
+    path="${path//[;<>|&\$\`]/_}"
     echo "$path"
 }
 
