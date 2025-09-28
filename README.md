@@ -63,6 +63,18 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Performance: Improves website loading times and SEO through proper HTTP headers
 
+8. **azure_swap_fixed.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+   - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
+   - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
+   - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
+   - Security: Comprehensive input validation, privilege checks, and secure file operations
+   - Benefits: Optimizes memory usage on VMs with local SSDs that reset on stop/start
+   - Usage:
+     ```bash
+     sudo ./azure_swap_fixed.bash
+     sudo systemctl status robust-swap-setup.service
+     ```
+
 ## Prerequisites
 
 **Python Requirements:**
@@ -72,6 +84,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 **PowerShell Requirements:**
 - Azure PowerShell module
 - Appropriate Azure subscription permissions
+
+**Bash Requirements:**
+- systemd-based Linux distribution (Ubuntu, RHEL, SUSE, etc.)
+- Root privileges for swap configuration
+- Standard utilities: `systemctl`, `blkid`, `mount`, `dd`, `mkswap`, `swapon`
 
 **Installation:**
 ```bash
@@ -99,6 +116,13 @@ python monitor-stddev.py --url "https://example.com" \
 **Set up spot VM eviction monitoring:**
 ```bash
 ./monitor-eviction.py --stop-services "apache2,mysql" --hook "/opt/backup.sh"
+```
+
+**Configure dynamic swap for Azure VMs:**
+```bash
+sudo ./azure_swap_fixed.bash
+# Verify service is running
+sudo systemctl status robust-swap-setup.service
 ```
 
 ## Advanced Features
