@@ -79,19 +79,20 @@ validate_permissions() {
 }
 
 # ==== CONFIGURATION VARIABLES ====
-readonly UNIT_NAME="robust-swap-setup.service"
-readonly UNIT_FILE="/etc/systemd/system/$UNIT_NAME"
-readonly SWAP_SCRIPT="/usr/local/bin/configure-swap.sh"
-readonly SWAP_LABEL="Temporary Storage"
-readonly SWAP_MOUNT="/mnt/temporary_storage"
-readonly FALLBACK_SWAPFILE="/mnt/swapfile"
-readonly SWAPPINESS="10"
-readonly RESUME_CONF="/etc/initramfs-tools/conf.d/resume"
-readonly FSTAB="/etc/fstab"
-readonly SYSCTL_CONF="/etc/sysctl.conf"
-readonly SWAP_FILE_MODE="600"
-readonly SERVICE_PERM="644"
-readonly SCRIPT_PERM="755"
+# These constants define the behavior and file locations for the swap setup
+readonly UNIT_NAME="robust-swap-setup.service"          # systemd service name
+readonly UNIT_FILE="/etc/systemd/system/$UNIT_NAME"      # systemd unit file location
+readonly SWAP_SCRIPT="/usr/local/bin/configure-swap.sh"   # generated swap configuration script
+readonly SWAP_LABEL="Temporary Storage"                   # Azure temporary disk label to search for
+readonly SWAP_MOUNT="/mnt/temporary_storage"              # mount point for temporary storage
+readonly FALLBACK_SWAPFILE="/mnt/swapfile"                # fallback swap file if no temp storage
+readonly SWAPPINESS="10"                                  # low swappiness for better performance
+readonly RESUME_CONF="/etc/initramfs-tools/conf.d/resume" # hibernation resume configuration
+readonly FSTAB="/etc/fstab"                              # filesystem table for persistent mounts
+readonly SYSCTL_CONF="/etc/sysctl.conf"                  # kernel parameter configuration
+readonly SWAP_FILE_MODE="600"                            # restrictive permissions for swap files
+readonly SERVICE_PERM="644"                              # standard permissions for service files
+readonly SCRIPT_PERM="755"                               # executable permissions for scripts
 
 # Validate swappiness value
 if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || [[ "$SWAPPINESS" -lt 0 ]] || [[ "$SWAPPINESS" -gt 100 ]]; then
@@ -99,25 +100,28 @@ if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || [[ "$SWAPPINESS" -lt 0 ]] || [[ "$SWAPPI
 fi
 
 # ==== MAIN SCRIPT EXECUTION ====
+# This is the primary entry point that orchestrates the entire swap setup process
 main() {
     log_info "Starting $SCRIPT_NAME v$SCRIPT_VERSION"
     
     check_privileges
     validate_system
     
-    # Create swap configuration script
+    # Step 1: Generate the swap configuration script that will run on each boot
     create_swap_script
-    
-    # Create systemd service unit
+
+    # Step 2: Create systemd service unit to execute the script automatically
     create_systemd_unit
-    
-    # Enable and start the service
+
+    # Step 3: Enable and start the service to activate swap immediately
     setup_service
     
     log_info "Setup complete. Service '$UNIT_NAME' installed and enabled."
 }
 
 # ==== STEP 1: Generate Swap Configuration Script ====
+# Creates a robust script that detects Azure temporary storage and configures swap
+# This script will be executed by systemd on every boot to handle ephemeral storage
 create_swap_script() {
     log_info "Creating swap configuration script at $SWAP_SCRIPT"
     
@@ -329,7 +333,8 @@ main() {
         fail "This script must be run as root"
     fi
     
-    # Detect device by label
+    # Detect Azure temporary storage device by its standard label
+    # Azure VMs with temporary disks typically label them "Temporary Storage"
     local device
     device=$(blkid -L "$TMP_LABEL" 2>/dev/null || true)
     
@@ -345,7 +350,8 @@ main() {
             mount "$device" "$SWAP_MOUNT" || fail "Failed to mount $device"
         fi
         
-        # Get device size and calculate swap size
+        # Calculate optimal swap size: use 90% of temporary storage
+        # This leaves some space for other temporary files while maximizing swap
         local size_bytes
         size_bytes=$(get_device_size "$device")
         local swap_size_bytes=$((size_bytes * 90 / 100))
@@ -353,14 +359,15 @@ main() {
         # Determine swap file path
         local swapfile="$SWAP_MOUNT/system.swap"
         
-        # Check if swap file needs recreation
+        # Smart swap file management: only recreate if size differs significantly
+        # This prevents unnecessary recreation on every boot if the size is appropriate
         local recreate_swapfile=0
         if [[ -f "$swapfile" ]]; then
             local actual_size
             actual_size=$(stat -c '%s' "$swapfile" 2>/dev/null || echo "0")
-            local min_size=$((swap_size_bytes * 95 / 100))
-            local max_size=$((swap_size_bytes * 105 / 100))
-            
+            local min_size=$((swap_size_bytes * 95 / 100))  # 5% tolerance
+            local max_size=$((swap_size_bytes * 105 / 100)) # 5% tolerance
+
             if [[ "$actual_size" -lt "$min_size" ]] || [[ "$actual_size" -gt "$max_size" ]]; then
                 log "Swap file size mismatch; recreating"
                 recreate_swapfile=1
@@ -384,6 +391,8 @@ main() {
         configure_resume "$swapfile"
         
     else
+        # Fallback strategy: create swap in /mnt if no Azure temporary storage found
+        # This ensures all VMs have swap, even those without temporary disks
         log "No '$TMP_LABEL' partition found; using fallback swap file"
         
         # Ensure /mnt exists
@@ -454,6 +463,8 @@ SWAP_SCRIPT_EOF
 }
 
 # ==== STEP 2: Generate systemd unit file ====
+# Creates a systemd service that runs the swap configuration on every boot
+# This is essential for Azure VMs where temporary storage is recreated on restart
 create_systemd_unit() {
     log_info "Creating systemd unit file at $UNIT_FILE"
     
@@ -477,11 +488,11 @@ RemainAfterExit=yes
 TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal
-PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/etc /mnt /var/log
-NoNewPrivileges=false
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER
+PrivateTmp=true                                    # Isolate /tmp for security
+ProtectSystem=strict                               # Protect system directories
+ReadWritePaths=/etc /mnt /var/log                  # Allow writes only where needed
+NoNewPrivileges=false                              # Allow privilege escalation for swap ops
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER  # Minimal required capabilities
 
 [Install]
 WantedBy=multi-user.target
@@ -495,6 +506,8 @@ EOF
 }
 
 # ==== STEP 3: Setup and enable the service ====
+# Activates the systemd service and runs it immediately to configure swap
+# The service will also run automatically on future boots
 setup_service() {
     log_info "Setting up systemd service"
     
