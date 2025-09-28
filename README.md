@@ -1,9 +1,25 @@
-# Useful Scripts for Microsoft Azure
+# Introduction - Useful Scripts for Microsoft Azure
 
+1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
+1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
+1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Examples of use:  
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"`  
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"`  
+  `python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region`  
+1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
+  `python blob-storage-price.py`  
+  `python blob-storage-price.py --blob-types "General Block Blob v2"`  
+  `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
+
+1. **create-spot-vms.ps1**: Creates a series of Azure VM spot instances automatically.
+1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
+1. **monitor-stddev.py**: Monitors an URL by doing requests at specific intervals and publishes results to a static Azure website or to local files, and can use Azure CosmosDB as an intermediate data storage, see [monitor-stddev.md](monitor-stddev.md) for details.
+1. **azure-swap.py**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machin was stopped.  
+
+
+# Details 
 A collection of Python and PowerShell utilities for Azure cost optimization, monitoring, and automation.
-
 ## Core Utilities
-
 ### Cost Optimization Scripts
 
 1. **vm-spot-price.py**: Find the cheapest Azure regions for spot VM instances
@@ -149,3 +165,4 @@ This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECUR
 Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
 
 Individual script licenses may vary - check script headers for specific licensing information.
+

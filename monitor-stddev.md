@@ -54,9 +54,6 @@ You can see the real-time monitoring results of github.com at https://web.archiv
 
 An example of an unstable website can be seen at https://web.archive.org/web/20250623162756/http://web.archive.org/screenshot/https://monitoring4.azureedge.net/
 
-
-https://monitor2.azureedge.net/index-github.html
-
 ## Parameters
 
 - `--url`: The URL of the website to monitor. This is a required parameter. It should start with `http://` or `https://`.
