@@ -1,4 +1,5 @@
-*.py eol=lf
-*.ps1 eof=crlf
-*.md eol=lf
+*.py text eol=lf
+*.ps1 text eof=crlf
+*.md text eol=lf
+*.badh text eol=lf
 LICENSE eol=lf
