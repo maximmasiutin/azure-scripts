@@ -1,5 +1,5 @@
 *.py text eol=lf
 *.ps1 text eof=crlf
 *.md text eol=lf
-*.badh text eol=lf
+*.bash text eol=lf
 LICENSE eol=lf
