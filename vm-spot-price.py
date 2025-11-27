@@ -15,13 +15,13 @@
 #   python vm-spot-price.py --sku-pattern "B2ts_v2" --series-pattern "Bsv2"
 
 from argparse import ArgumentParser, Namespace
-from json import loads, JSONDecodeError
+from json import JSONDecodeError
 from sys import exit, stderr
 from typing import List, Dict, Any
 import time
 from functools import wraps
 
-from requests import get, Response, Session, exceptions
+from requests import Response, Session, exceptions
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tabulate import tabulate
