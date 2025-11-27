@@ -15,9 +15,8 @@
 from typing import List, Dict, Tuple, Optional, Set
 import json
 import sys
-import ssl
 import time
-from argparse import ArgumentParser
+from argparse import ArgumentParser, RawDescriptionHelpFormatter
 from collections import defaultdict
 from urllib.parse import urlparse
 
@@ -192,7 +191,7 @@ def validate_blob_types(blob_types_str: str) -> List[str]:
     validated_types = []
     
     # Define allowed characters for blob type names (security measure)
-    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0-9 _-.")
+    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-.")
     
     for blob_type in blob_types:
         if not blob_type:
@@ -241,7 +240,7 @@ Security Notes:
   - Input validation prevents injection attacks
   - Rate limiting is respected automatically
         """,
-        formatter_class=parser.RawDescriptionHelpFormatter
+        formatter_class=RawDescriptionHelpFormatter
     )
     
     parser.add_argument(
