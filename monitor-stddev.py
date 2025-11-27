@@ -545,8 +545,8 @@ def monitor_website(
                 analysis_adj_latencies = adjusted_latencies[-SAMPLE_SIZE_SECONDS:]
                 analysis_status_codes = response_status_codes[-SAMPLE_SIZE_SECONDS:]
 
-                valid_eff_latencies = [l for l in analysis_eff_latencies if l is not None]
-                valid_adj_latencies = [l for l in analysis_adj_latencies if l is not None]
+                valid_eff_latencies = [latency for latency in analysis_eff_latencies if latency is not None]
+                valid_adj_latencies = [latency for latency in analysis_adj_latencies if latency is not None]
 
                 min_eff = min(valid_eff_latencies) if valid_eff_latencies else 0.0
                 max_eff = max(valid_eff_latencies) if valid_eff_latencies else 0.0
