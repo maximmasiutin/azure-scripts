@@ -20,7 +20,7 @@
 # The hook is executed before stopping the services.
 
 from argparse import ArgumentParser
-from os import path, access, X_OK, getcwd
+from os import path, access, X_OK
 from platform import uname, node
 from sys import stderr, exit
 from subprocess import run
