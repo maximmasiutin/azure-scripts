@@ -31,7 +31,7 @@ import os
 
 metadataUrl = "http://169.254.169.254/metadata/scheduledevents"
 endpointTimeout = 10
-headerValue = {"Metadata": "true"}  # Fixed typo: was headerValur
+headerValue = {"Metadata": "true"}
 queryParams = {"api-version": "2020-07-01"}
 stopStatuses = ["Scheduled", "Started"]
 stopTypes = ["Reboot", "Redeploy", "Freeze", "Preempt", "Terminate"]
@@ -53,9 +53,12 @@ def get_scheduled_events(max_retries=3, backoff_factor=2):
     return {}
 
 def validate_hook_path(hook_path):
-    """Validate hook script path for security."""
+    """
+    Validate hook script path for security.
+    Raises ValueError if invalid. Returns None if valid.
+    """
     if not hook_path:
-        return True
+        return
 
     # Check if file exists and is executable
     if not (path.exists(hook_path) and access(hook_path, X_OK)):
@@ -72,8 +75,6 @@ def validate_hook_path(hook_path):
     # Prevent directory traversal
     if '..' in hook_path:
         raise ValueError("Hook path cannot contain '..' (directory traversal)")
-
-    return True
 
 def eviction_action(a_services, a_hook):
     """Execute hook and stop services on eviction with improved security."""
