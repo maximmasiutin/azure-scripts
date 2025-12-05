@@ -13,28 +13,25 @@ The **Standard Deviation Health Status Monitor** is a website monitoring tool th
 
 ## Requirements
 - Python 3.x
-- `requests` package
+- `curl_cffi` package (impersonates Chrome TLS fingerprint to avoid Cloudflare bot detection)
 - `azure-storage-blob` package
 - `azure-data-tables` package
-- `PIL` package (usually installed as the Pillow package)
+- `Pillow` package (PIL)
 - `statistics` package (standard since Python 3.4)
 - `argparse` package (standard since Python 3.2)
 
 ## Installation
 
-Under Ubuntu, you can install the required Python packages using `apt-get` (preferred way):
+Install the required Python packages using `pip`:
 ```sh
-apt-get install python3-pil python3-azure-storage python3-azure-cosmosdb-table
-```
-
-You can also install the required Python packages using `pip`:
-```sh
-pip install requests azure-storage-blob PIL
+pip install curl_cffi azure-storage-blob azure-data-tables Pillow
 ```
 or
 ```sh
 pip install -r requirements.txt
 ```
+
+Note: `curl_cffi` replaces the standard `requests` library to provide browser-like TLS fingerprinting, which helps avoid bot detection on sites protected by Cloudflare.
 
 ## Using
 ### Calling format
@@ -60,7 +57,7 @@ An example of an unstable website can be seen at https://web.archive.org/web/202
 
 - `--authorization`: Value of the "Authorization" HTTP header
 
-- `--user-agent`: The user agent string to be used in the HTTP request header. This is optional and can be used to overwrite the default value used by the Python's `requests` package.
+- `--user-agent`: The user agent string to be used in the HTTP request header. This is optional and can be used to customize the User-Agent sent with each probe.
 
 - `--timeout`: The maximum amount of time to wait for a response from the website, in seconds. It is also used to calculate "adjusted" latency value: if the request returns non-200-status, the adjusted latency is considered as big as the timeout value. The default value is `2.0` seconds.
 
