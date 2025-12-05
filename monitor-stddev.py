@@ -429,7 +429,11 @@ def render_history_to_png_file(data_sorted: List[Dict[str, Union[str, int]]], fi
 def build_request_headers(user_agent: Optional[str], authorization: Optional[str]) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     if user_agent:
-        headers['User-Agent'] = user_agent
+        # Strip "User-Agent:" prefix if present to avoid duplication
+        ua_value = user_agent
+        if ua_value.lower().startswith('user-agent:'):
+            ua_value = ua_value[len('user-agent:'):].lstrip()
+        headers['User-Agent'] = ua_value
     if authorization:
         headers['Authorization'] = authorization
     return headers
