@@ -95,7 +95,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 **Python Requirements:**
 - Python 3.6+
-- Required packages: `requests`, `tabulate`, `azure-storage-blob`, `azure-data-tables`, `PIL` (Pillow)
+- Required packages: `curl_cffi`, `tabulate`, `azure-storage-blob`, `azure-data-tables`, `Pillow`
 
 **PowerShell Requirements:**
 - Azure PowerShell module
@@ -108,12 +108,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 **Installation:**
 ```bash
-# Ubuntu/Debian (recommended)
-apt-get install python3-pil python3-azure-storage python3-azure-cosmosdb-table
-
-# Or via pip
-pip install requests tabulate azure-storage-blob azure-data-tables Pillow
+# Via pip (recommended)
+pip install curl_cffi tabulate azure-storage-blob azure-data-tables Pillow
 ```
+
+Note: `curl_cffi` replaces `requests` for browser-like TLS fingerprinting (avoids Cloudflare bot detection).
 
 ## Quick Start Examples
 
