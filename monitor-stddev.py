@@ -14,19 +14,21 @@ from io import BytesIO
 from sys import stderr
 from collections import Counter
 from datetime import datetime, timezone, timedelta, date
-from typing import List, Optional, Union, Dict
+from typing import List, Optional, Union, Dict, Any
+from types import FrameType
 from abc import ABC, abstractmethod
 import signal
 import sys
 
-from PIL import Image, ImageDraw, ImageFont  # type: ignore
-from requests import Session, Response, get  # type: ignore
-from azure.storage.blob import (  # type: ignore
+from PIL import Image, ImageDraw, ImageFont
+from curl_cffi import requests as cffi_requests  # type: ignore
+from curl_cffi.requests import Session, Response  # type: ignore
+from azure.storage.blob import (
     BlobServiceClient,
     BlobClient,
     ContentSettings,
 )
-from azure.data.tables import TableClient  # type: ignore
+from azure.data.tables import TableClient
 
 
 # Constants - made configurable
@@ -38,7 +40,7 @@ STATUS_HEALTHY: int = 1
 MAX_HISTORY_SIZE: int = SAMPLE_SIZE_SECONDS * 3  # Keep some buffer to prevent memory leaks
 
 
-def cleanup_old_data(data_list: List, max_size: int) -> None:
+def cleanup_old_data(data_list: List[Any], max_size: int) -> None:
     """Clean up old data to prevent memory leaks."""
     if len(data_list) > max_size:
         del data_list[:len(data_list) - max_size]
@@ -477,7 +479,9 @@ def monitor_website(
         print("Not using Azure storage since connection string/container name not supplied.")
         saver = FileSaver(save_name_json, save_name_html)
 
-    session = Session() if use_session else None
+    # Use Chrome impersonation for TLS fingerprint to avoid bot detection
+    browser_impersonate = "chrome"
+    session = Session(impersonate=browser_impersonate) if use_session else None
     headers = build_request_headers(user_agent, authorization)
 
     if session:
@@ -497,7 +501,7 @@ def monitor_website(
                 if session:
                     response: Response = session.get(url, timeout=request_timeout)
                 else:
-                    response = get(url, timeout=request_timeout, headers=headers)
+                    response = cffi_requests.get(url, timeout=request_timeout, headers=headers, impersonate=browser_impersonate)
                 response_status_code = response.status_code
                 probe_end_time = time()
                 if response_status_code == 200:
@@ -705,7 +709,7 @@ def append_health_metric(storage: DataStorage, probe_timestamp_dt: datetime, hea
     metric_record: Dict[str, Union[str, int]] = {"timestamp": current_timestamp_str, "healthy": health_status}
     storage.append_metric(metric_record, debug_output=debug_output)
 
-def handle_sigterm(signum, frame):
+def handle_sigterm(signum: int, frame: Optional[FrameType]) -> None:
     """Handle SIGTERM signal for graceful script exit."""
     print('\nMonitoring stopped by service signal (SIGTERM).')
     sys.exit(0)
