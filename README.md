@@ -2,10 +2,11 @@
 
 1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
-1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Examples of use:  
-  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"`  
-  `python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"`  
-  `python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region`  
+1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison to find the cheapest option across different VM sizes. Examples of use:
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"`
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"`
+  `python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region`
+  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region`  
 1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
   `python blob-storage-price.py`  
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
@@ -24,13 +25,23 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 1. **vm-spot-price.py**: Find the cheapest Azure regions for spot VM instances
    - Key Features: Multi-region price comparison, custom CPU/SKU filtering, spot vs regular pricing
+   - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
+   - PowerShell Integration: `--return-region` outputs "region vmsize" format for easy parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
    - Examples:
      ```bash
+     # Single SKU pattern
      python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
-     python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"
      python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region
+
+     # Multi-VM comparison (find cheapest across multiple sizes)
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region
+
+     # PowerShell integration
+     # $result = python vm-spot-price.py --vm-sizes "D4pls_v5,F4s_v2" --return-region
+     # $region, $vmSize = $result -split ' '
+     # New-AzVM -Location $region -Size $vmSize -Priority Spot ...
      ```
 
 2. **blob-storage-price.py**: Compare Azure blob storage pricing across regions
@@ -119,6 +130,12 @@ Note: `curl_cffi` replaces `requests` for browser-like TLS fingerprinting (avoid
 **Find cheapest region for a specific VM:**
 ```bash
 python vm-spot-price.py --sku-pattern "B4ls_v2" --return-region
+```
+
+**Find cheapest spot option across multiple VM sizes:**
+```bash
+python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
+# Output: centralindia Standard_D4as_v5
 ```
 
 **Monitor website with Azure integration:**
