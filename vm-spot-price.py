@@ -211,6 +211,10 @@ def main() -> None:
     parser.add_argument('--non-spot', action='store_true', help='Only return non-spot instances')
     parser.add_argument('--low-priority', action='store_true', help='Include low priority instances (by default, skip VMs with "Low Priority" in meterName)')
     parser.add_argument('--return-region', action='store_true', help='Return only one region output if found')
+    parser.add_argument('--exclude-regions', type=str, help='Comma-separated list of regions to exclude (e.g., centralindia,eastus)')
+    parser.add_argument('--exclude-regions-file', type=str, action='append', help='File containing regions to exclude (one per line). Can be specified multiple times.')
+    parser.add_argument('--exclude-vm-sizes', type=str, help='Comma-separated list of VM sizes to exclude (e.g., D4pls_v5,D4ps_v5)')
+    parser.add_argument('--exclude-vm-sizes-file', type=str, help='File containing VM sizes to exclude (one per line)')
     parser.add_argument('--log-level', type=str, help='Set the logging level')
     parser.add_argument('--output-format', choices=['table', 'json', 'csv'], default='table', help='Output format (default: %(default)s)')
     parser.add_argument('--output-file', help='Save output to file instead of stdout')
@@ -232,6 +236,49 @@ def main() -> None:
     non_spot: bool = args.non_spot
     low_priority: bool = args.low_priority
     return_region: bool = args.return_region
+
+    # Build excluded regions set
+    excluded_regions: set = set()
+    if args.exclude_regions:
+        for region in args.exclude_regions.split(','):
+            region = region.strip().lower()
+            if region:
+                excluded_regions.add(region)
+    if args.exclude_regions_file:
+        for exclude_file in args.exclude_regions_file:
+            try:
+                with open(exclude_file, 'r') as f:
+                    for line in f:
+                        region = line.strip().lower()
+                        if region and not region.startswith('#'):
+                            excluded_regions.add(region)
+                logging.debug(f"Loaded exclusions from {exclude_file}")
+            except IOError as e:
+                logging.warning(f"Could not read exclude-regions-file {exclude_file}: {e}")
+    if excluded_regions:
+        logging.debug(f"Excluding regions: {', '.join(sorted(excluded_regions))}")
+
+    # Build excluded VM sizes set
+    excluded_vm_sizes: set = set()
+    if args.exclude_vm_sizes:
+        for vm_size in args.exclude_vm_sizes.split(','):
+            vm_size = vm_size.strip()
+            if vm_size:
+                # Normalize: remove Standard_ prefix if present, store lowercase
+                vm_size = vm_size.replace("Standard_", "").lower()
+                excluded_vm_sizes.add(vm_size)
+    if args.exclude_vm_sizes_file:
+        try:
+            with open(args.exclude_vm_sizes_file, 'r') as f:
+                for line in f:
+                    vm_size = line.strip()
+                    if vm_size and not vm_size.startswith('#'):
+                        vm_size = vm_size.replace("Standard_", "").lower()
+                        excluded_vm_sizes.add(vm_size)
+        except IOError as e:
+            logging.warning(f"Could not read exclude-vm-sizes-file: {e}")
+    if excluded_vm_sizes:
+        logging.debug(f"Excluding VM sizes: {', '.join(sorted(excluded_vm_sizes))}")
 
     # Configure logging
     if args.log_level:
@@ -256,10 +303,15 @@ def main() -> None:
             vm_size = vm_size.strip()
             if not vm_size:
                 continue
+            # Check if this VM size is excluded
+            normalized = vm_size.replace("Standard_", "").lower()
+            if normalized in excluded_vm_sizes:
+                logging.debug(f"Skipping excluded VM size: {vm_size}")
+                continue
             series = extract_series_from_vm_size(vm_size)
             vm_sizes_list.append((vm_size, series))
         if not vm_sizes_list:
-            logging.error("No valid VM sizes provided in --vm-sizes")
+            logging.error("No valid VM sizes provided in --vm-sizes (all may be excluded)")
             exit(1)
     else:
         # Use legacy sku-pattern and series-pattern
@@ -354,6 +406,14 @@ def main() -> None:
 
     # Sort by price (element [1] is retail price)
     table_data.sort(key=lambda x: float(x[1]))
+
+    # Filter out excluded regions
+    if excluded_regions:
+        original_count = len(table_data)
+        table_data = [row for row in table_data if row[3].lower() not in excluded_regions]
+        filtered_count = original_count - len(table_data)
+        if filtered_count > 0:
+            logging.debug(f"Filtered out {filtered_count} entries from excluded regions")
 
     # Output results
     if return_region:

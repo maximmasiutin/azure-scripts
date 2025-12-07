@@ -26,6 +26,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 1. **vm-spot-price.py**: Find the cheapest Azure regions for spot VM instances
    - Key Features: Multi-region price comparison, custom CPU/SKU filtering, spot vs regular pricing
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
+   - Exclusion Filters: Exclude specific regions or VM sizes via command line or file
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - PowerShell Integration: `--return-region` outputs "region vmsize" format for easy parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
@@ -37,6 +38,10 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
      # Multi-VM comparison (find cheapest across multiple sizes)
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region
+
+     # Exclude specific regions or VM sizes
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt --exclude-regions-file regions2.txt
 
      # PowerShell integration
      # $result = python vm-spot-price.py --vm-sizes "D4pls_v5,F4s_v2" --return-region
@@ -85,6 +90,8 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 6. **create-spot-vms.ps1**: Automated spot VM deployment
    - Features: Batch creation of multiple spot instances with consistent configuration
    - Cost Optimization: Leverages spot pricing for development/testing environments
+   - **Automatic Quota Request**: Use `-RequestQuota` switch to automatically create an Azure Support ticket if spot quota is insufficient in the target region.
+   - **Custom Initialization**: Supports passing cloud-init scripts via `-CustomData` or downloading from `-InitScriptUrl`.
 
 7. **set-storage-account-content-headers.ps1**: Static website optimization
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
