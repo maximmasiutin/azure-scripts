@@ -15,7 +15,7 @@
 1. **create-spot-vms.ps1**: Creates a series of Azure VM spot instances automatically.
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **monitor-stddev.py**: Monitors an URL by doing requests at specific intervals and publishes results to a static Azure website or to local files, and can use Azure CosmosDB as an intermediate data storage, see [monitor-stddev.md](monitor-stddev.md) for details.
-1. **azure-swap.py**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machin was stopped.  
+1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machine was stopped.  
 
 
 # Details 
@@ -92,12 +92,14 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Cost Optimization: Leverages spot pricing for development/testing environments
    - **Automatic Quota Request**: Use `-RequestQuota` switch to automatically create an Azure Support ticket if spot quota is insufficient in the target region.
    - **Custom Initialization**: Supports passing cloud-init scripts via `-CustomData` or downloading from `-InitScriptUrl`.
+   - **Network Flexibility**: Supports `-NoPublicIP` (default: creates public IP) and `-UseNatGateway`.
+   - **Resiliency**: Auto-detects supported regions and blacklists specific VM sizes if unavailable.
 
 7. **set-storage-account-content-headers.ps1**: Static website optimization
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Performance: Improves website loading times and SEO through proper HTTP headers
 
-8. **azure_swap_fixed.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+8. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
    - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
    - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
    - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
@@ -105,7 +107,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Benefits: Optimizes memory usage on VMs with local SSDs that reset on stop/start
    - Usage:
      ```bash
-     sudo ./azure_swap_fixed.bash
+     sudo ./azure-swap.bash
      sudo systemctl status robust-swap-setup.service
      ```
 
@@ -159,7 +161,7 @@ python monitor-stddev.py --url "https://example.com" \
 
 **Configure dynamic swap for Azure VMs:**
 ```bash
-sudo ./azure_swap_fixed.bash
+sudo ./azure-swap.bash
 # Verify service is running
 sudo systemctl status robust-swap-setup.service
 ```
@@ -183,9 +185,8 @@ sudo systemctl status robust-swap-setup.service
 
 This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECURITY.md) for details.
 
-## License
+## License 
 
 Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
 
 Individual script licenses may vary - check script headers for specific licensing information.
-

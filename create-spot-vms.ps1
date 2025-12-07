@@ -48,7 +48,8 @@ param(
     # Options
     [switch]$SkipQuotaCheck,
     [switch]$Force,
-    [switch]$RequestQuota  # Attempt to auto-request quota increase on failure
+    [switch]$RequestQuota,  # Attempt to auto-request quota increase on failure
+    [switch]$BlockSSH       # If set, NSG will be created but SSH traffic blocked (default: allowed)
 )
 
 # ==== HELPER FUNCTIONS ====
@@ -108,71 +109,36 @@ function Request-SpotQuotaIncrease {
         $ticketName = "spot-quota-$Location-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 
         # Azure Support API endpoint
-        $apiVersion = "2024-04-01"
-        $supportUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Support/supportTickets/${ticketName}?api-version=$apiVersion"
-
-        # Service ID for "Service and subscription limits (Quotas)"
-        $serviceId = "/providers/Microsoft.Support/services/06bfd9d3-516b-d5c6-5802-169c800dec89"
-
-        # Problem classification for Compute-VM (Cores-vCPUs) quota
-        $problemClassificationId = "/providers/Microsoft.Support/services/06bfd9d3-516b-d5c6-5802-169c800dec89/problemClassifications/e12e3d1d-7fa0-af33-c6d0-3c50df9658a3"
-
-        # Build quota payload - Spot quotas are "All Series" not per-family usually, but we send family context
-        $quotaPayload = @{
-            VMFamily = "All Series"
-            NewLimit = $RequestedLimit
-            Type = "Spot"
-        } | ConvertTo-Json -Compress
-
-        $body = @{
-            properties = @{
-                title = "Spot vCPU quota increase for $Location"
-                description = "Requesting spot vCPU quota increase to $RequestedLimit cores in $Location region for running Azure Spot VMs."
-                severity = "minimal"
-                serviceId = $serviceId
-                problemClassificationId = $problemClassificationId
-                contactDetails = @{
-                    firstName = "Automated"
-                    lastName = "Request"
-                    primaryEmailAddress = $accountName
-                    preferredContactMethod = "email"
-                    preferredSupportLanguage = "en-US"
-                    preferredTimeZone = "UTC"
-                    country = "USA"
+        $apiVersions = @("2024-04-01", "2020-04-01")
+        $result = $null
+        
+        foreach ($version in $apiVersions) {
+            $supportUrl = "https://management.azure.com/subscriptions/$subscriptionId/providers/Microsoft.Support/supportTickets/${ticketName}?api-version=$version"
+            
+            try {
+                # Submit support ticket
+                $result = Invoke-RestMethod -Uri $supportUrl -Method Put -Headers $headers -Body $body -ErrorAction Stop
+                break # Success
+            } catch {
+                $err = $_.Exception.Message
+                if ($err -match "The api-version.*is not supported" -or $err -match "InvalidApiVersion") {
+                    Write-Log "API version $version not supported in $Location, retrying with older version..." "WARN"
+                    continue
                 }
-                advancedDiagnosticConsent = "No"
-                quotaTicketDetails = @{
-                    quotaChangeRequestVersion = "1.0"
-                    quotaChangeRequests = @(
-                        @{
-                            region = $Location
-                            payload = $quotaPayload
-                        }
-                    )
-                }
+                throw $_ # Re-throw other errors
             }
-        } | ConvertTo-Json -Depth 10
-
-        Write-Log "Creating support ticket: $ticketName" "DEBUG"
-
-        # Get access token
-        $token = (Get-AzAccessToken -ResourceUrl "https://management.azure.com").Token
-        $headers = @{
-            "Authorization" = "Bearer $token"
-            "Content-Type" = "application/json"
         }
+        
+        if (-not $result) { throw "All API versions failed" }
 
-        # Submit support ticket
-        $response = Invoke-RestMethod -Uri $supportUrl -Method Put -Headers $headers -Body $body -ErrorAction Stop
-
-        Write-Log "Support ticket created: $($response.name)" "SUCCESS"
-        Write-Log "Status: $($response.properties.status)" "INFO"
+        Write-Log "Support ticket created: $($result.name)" "SUCCESS"
+        Write-Log "Status: $($result.properties.status)" "INFO"
 
         return @{
             Success = $true
-            TicketName = $response.name
-            TicketId = $response.properties.supportTicketId
-            Status = $response.properties.status
+            TicketName = $result.name
+            TicketId = $result.properties.supportTicketId
+            Status = $result.properties.status
         }
     }
     catch {
@@ -198,20 +164,61 @@ function Get-VMCredentials {
         try {
             $username = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "vmOsAdminUserName").SecretValueText
             $password = (Get-AzKeyVaultSecret -VaultName $KeyVaultName -Name "vmOsAdminPassword").SecretValue
-            return New-Object PSCredential($username, $password)
+            return @{ Credential = New-Object PSCredential($username, $password); Password = $null }
         } catch {
             Write-Log "Could not get credentials from Key Vault: $_" "WARN"
         }
     }
 
+    $plaintextPassword = $null
     if (-not $AdminPassword) {
-        $chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()"
-        $pwd = -join ((1..16) | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+        # Cryptographically strong password generation
+        # Length: 28
+        # Alphabet: [a-zA-Z0-9-_] (64 characters)
+        # 64 divides 256 evenly (256 = 64 * 4), so modulo 64 introduces NO bias.
+        
+        $length = 28
+        $alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        
+        # Generate random bytes
+        $bytes = New-Object byte[] $length
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        
+        # Map bytes to characters
+        $pwd = -join ($bytes | ForEach-Object { $alphabet[$_ % 64] })
+        
+        # Ensure Azure complexity (3 of 4: Upper, Lower, Digit, Special)
+        # With length 28, statistical probability of missing a class is near zero, 
+        # but we check to be safe. If missing, we inject one of each at random positions.
+        $hasUpper = $pwd -cmatch "[A-Z]"
+        $hasLower = $pwd -cmatch "[a-z]"
+        $hasDigit = $pwd -match "[0-9]"
+        $hasSpecial = $pwd -match "[-_]"
+        
+        if (-not ($hasUpper -and $hasLower -and $hasDigit -and $hasSpecial)) {
+            # Fallback: strict injection if RNG somehow missed a class (extremely unlikely)
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            $b = New-Object byte[] 4
+            $rng.GetBytes($b)
+            
+            # Convert string to char array to modify
+            $chars = $pwd.ToCharArray()
+            
+            # Inject missing classes at random indices
+            if (-not $hasUpper)   { $chars[$b[0] % $length] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[$b[0] % 26] }
+            if (-not $hasLower)   { $chars[$b[1] % $length] = "abcdefghijklmnopqrstuvwxyz"[$b[1] % 26] }
+            if (-not $hasDigit)   { $chars[$b[2] % $length] = "0123456789"[$b[2] % 10] }
+            if (-not $hasSpecial) { $chars[$b[3] % $length] = "-_"[$b[3] % 2] }
+            
+            $pwd = -join $chars
+        }
+
         $script:AdminPassword = ConvertTo-SecureString $pwd -AsPlainText -Force
-        Write-Log "Generated random admin password"
+        $plaintextPassword = $pwd
+        Write-Log "Generated cryptographically strong admin password (28 chars)"
     }
 
-    return New-Object PSCredential($AdminUsername, $script:AdminPassword)
+    return @{ Credential = New-Object PSCredential($AdminUsername, $script:AdminPassword); Password = $plaintextPassword }
 }
 
 function Test-SpotQuota {
@@ -452,7 +459,9 @@ if ($NoPublicIP -and $UseNatGateway) {
 }
 
 # ==== CREDENTIALS ====
-$credential = Get-VMCredentials
+$credData = Get-VMCredentials
+$credential = $credData.Credential
+$generatedPassword = $credData.Password
 
 # ==== CREATE VMs ====
 $results = @()
@@ -483,11 +492,33 @@ foreach ($vmN in $vmNames) {
 
     # Public IP
     $pipName = $null
+    $nsg = $null
     if (-not $NoPublicIP) {
         $pipName = "$vmN-pip"
         $pip = New-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard
         $nicParams.PublicIpAddressId = $pip.Id
         Write-Log "Created public IP: $pipName"
+
+        # Create NSG
+        $nsgName = "$vmN-nsg"
+        $nsg = Get-AzNetworkSecurityGroup -Name $nsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+        
+        if (-not $nsg) {
+            if ($BlockSSH) {
+                Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
+                $nsg = New-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Location $Location -Name $nsgName
+            } else {
+                Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
+                $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
+                    -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
+                    -SourceAddressPrefix Internet -SourcePortRange * `
+                    -DestinationAddressPrefix * -DestinationPortRange 22
+                $nsg = New-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Location $Location -Name $nsgName -SecurityRules $ruleSSH
+            }
+        } else {
+            Write-Log "Using existing NSG: $nsgName"
+        }
+        $nicParams.NetworkSecurityGroupId = $nsg.Id
     } else {
         Write-Log "Skipping public IP creation (NoPublicIP specified)" "INFO"
     }
@@ -552,6 +583,7 @@ foreach ($vmN in $vmNames) {
             PublicIP = $publicIp
             Location = $Location
             VMSize = $VMSize
+            AdminPassword = $generatedPassword
         }
     } catch {
         $errorMsg = $_.Exception.Message
