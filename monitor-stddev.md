@@ -28,10 +28,62 @@ pip install curl_cffi azure-storage-blob azure-data-tables Pillow
 ```
 or
 ```sh
-pip install -r requirements.txt
+pip install -r monitor-stddev-requirements.txt
 ```
 
-Note: `curl_cffi` replaces the standard `requests` library to provide browser-like TLS fingerprinting, which helps avoid bot detection on sites protected by Cloudflare.
+On Ubuntu/Debian with system Python (23.04+):
+```sh
+sudo pip3 install --break-system-packages -r monitor-stddev-requirements.txt
+```
+
+Note: `curl_cffi` is only available via PyPI (pip), not via apt. It replaces the standard `requests` library to provide browser-like TLS fingerprinting, which helps avoid bot detection on sites protected by Cloudflare.
+
+## Testing URL Connectivity
+
+Before setting up monitoring for a new website, use the `--test` option to verify that the URL is accessible and not blocked by Cloudflare or similar protection:
+
+```sh
+python monitor-stddev.py --url "https://example.com" --test
+```
+
+With custom timeout:
+```sh
+python monitor-stddev.py --url "https://example.com" --test --timeout 5
+```
+
+The test performs a single HTTP request and reports:
+- HTTP status code and latency
+- Content-Type and Content-Length headers
+- Detection of Cloudflare blocking or CAPTCHA challenges
+- Exit code: 0 (success) or 1 (blocked/error)
+
+Example output for successful test:
+```
+Testing: https://example.com
+Timeout: 2.0s
+------------------------------------------------------------
+Status: 200
+Latency: 0.342s
+Content-Type: text/html; charset=UTF-8
+Content-Length: 12345
+------------------------------------------------------------
+Result: OK - monitoring should work
+```
+
+Example output for blocked site:
+```
+Testing: https://example.com
+Timeout: 2.0s
+------------------------------------------------------------
+Status: 403
+Latency: 0.156s
+Content-Type: text/html
+Content-Length: 5678
+------------------------------------------------------------
+Result: BLOCKED - access forbidden
+Reason: Cloudflare protection detected
+Solution: Whitelist monitoring server IP in Cloudflare firewall rules
+```
 
 ## Using
 ### Calling format
@@ -97,6 +149,9 @@ An example of an unstable website can be seen at https://web.archive.org/web/202
 
 - `--use-session`: Use persistent HTTP session with keep-alive (default: false).
 
+- `--test`: Test URL connectivity and exit without collecting data. Makes a single HTTP request, reports status/latency, detects Cloudflare blocking, and exits with code 0 (success) or 1 (blocked/error).
+
+- `--debug`: Enable debug output.
 
 
 ## License
