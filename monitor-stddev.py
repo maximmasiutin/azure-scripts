@@ -1,6 +1,8 @@
 #!/usr/bin/python
 """
-monitor-stddev: A website monitoring script that tests health, latency, and error rates, with Azure Blob Storage and Azure Cosmos DB integration.
+monitor-stddev: A website monitoring script that evaluates site stability and health.
+It goes beyond simple up/down checks by calculating the standard deviation of latency
+to detect inconsistent performance (jitter) and stability issues.
 Copyright (C) 2025 Maxim Masiutin. All rights reserved.
 See monitor-stddev.md for details.
 """
