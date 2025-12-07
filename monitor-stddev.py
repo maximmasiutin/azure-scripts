@@ -714,6 +714,100 @@ def handle_sigterm(signum: int, frame: Optional[FrameType]) -> None:
     print('\nMonitoring stopped by service signal (SIGTERM).')
     sys.exit(0)
 
+
+def test_url(
+    url: str,
+    request_timeout: float,
+    user_agent: Optional[str],
+    authorization: Optional[str],
+    use_session: bool,
+) -> int:
+    """Test URL connectivity and detect Cloudflare blocking. Returns 0 on success, 1 on failure."""
+    print(f"Testing: {url}")
+    print(f"Timeout: {request_timeout}s")
+    print("-" * 60)
+
+    browser_impersonate = "chrome"
+    headers = build_request_headers(user_agent, authorization)
+    session = Session(impersonate=browser_impersonate) if use_session else None
+
+    if session:
+        session.headers.update(headers)
+
+    try:
+        start_time = time()
+        if session:
+            response: Response = session.get(url, timeout=request_timeout)
+        else:
+            response = cffi_requests.get(url, timeout=request_timeout, headers=headers, impersonate=browser_impersonate)
+        latency = time() - start_time
+
+        print(f"Status: {response.status_code}")
+        print(f"Latency: {latency:.3f}s")
+
+        content_type = response.headers.get('Content-Type', 'unknown')
+        content_length = response.headers.get('Content-Length', 'unknown')
+        print(f"Content-Type: {content_type}")
+        print(f"Content-Length: {content_length}")
+
+        # Check for Cloudflare blocking indicators
+        body_lower = response.text[:5000].lower() if response.text else ""
+        cloudflare_indicators = [
+            'cloudflare',
+            'cf-ray',
+            'checking your browser',
+            'challenge-platform',
+            'cf-chl-bypass',
+            'just a moment',
+            'enable javascript and cookies',
+        ]
+        captcha_indicators = [
+            'captcha',
+            'hcaptcha',
+            'recaptcha',
+            'challenge',
+            'verify you are human',
+        ]
+
+        is_cloudflare = any(ind in body_lower for ind in cloudflare_indicators)
+        is_captcha = any(ind in body_lower for ind in captcha_indicators)
+        cf_ray = response.headers.get('cf-ray', None)
+
+        print("-" * 60)
+
+        if response.status_code == 200 and not is_captcha:
+            print("Result: OK - monitoring should work")
+            if is_cloudflare:
+                print("Note: Cloudflare detected but request succeeded")
+            return 0
+        elif response.status_code == 403:
+            print("Result: BLOCKED - access forbidden")
+            if is_cloudflare or cf_ray:
+                print("Reason: Cloudflare protection detected")
+                print("Solution: Whitelist monitoring server IP in Cloudflare firewall rules")
+            return 1
+        elif is_captcha:
+            print("Result: BLOCKED - CAPTCHA challenge detected")
+            print("Reason: Cloudflare or similar protection requiring human verification")
+            print("Solution: Whitelist monitoring server IP in Cloudflare firewall rules")
+            if response.text:
+                preview = response.text[:500].replace('\n', ' ').replace('\r', '')
+                print(f"Body preview: {preview}...")
+            return 1
+        elif response.status_code >= 400:
+            print(f"Result: ERROR - HTTP {response.status_code}")
+            return 1
+        else:
+            print(f"Result: OK - status {response.status_code}")
+            return 0
+
+    except Exception as e:
+        print(f"Result: FAILED - {e}")
+        return 1
+    finally:
+        if session:
+            session.close()
+
 def main() -> None:
     signal.signal(signal.SIGTERM, handle_sigterm)
 
@@ -741,6 +835,7 @@ def main() -> None:
     parser.add_argument('--font-file', type=str, default='font.otf', help='Font file to use for PNG rendering (default: %(default)s)')
     parser.add_argument('--use-session', action='store_true', help='Use persistent HTTP session with keep-alive')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
+    parser.add_argument('--test', action='store_true', help='Test URL connectivity and exit (no data collection)')
 
     args: Namespace = parser.parse_args()
 
@@ -798,6 +893,16 @@ def main() -> None:
         if not args.url.startswith(tuple(allowed_prefixes)):
             print(f"Error: URL must start with {' or '.join(allowed_prefixes)}", file=stderr)
             sys.exit(1)
+
+        if args.test:
+            exit_code = test_url(
+                url=args.url,
+                request_timeout=args.timeout,
+                user_agent=args.user_agent,
+                authorization=args.authorization,
+                use_session=args.use_session,
+            )
+            sys.exit(exit_code)
 
         if not 1 <= args.probe_interval <= 60:
             print('Error: Probe interval must be between 1 and 60 seconds.', file=stderr)
