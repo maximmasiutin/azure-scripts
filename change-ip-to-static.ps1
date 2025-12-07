@@ -319,7 +319,7 @@ function Show-SummaryReport {
     if ($successful.Count -gt 0) {
         Write-Log "=== SUCCESSFUL CHANGES ===" -Level "Success"
         foreach ($success in $successful) {
-            Write-Log "- $($success.Name): $($success.PreviousMethod) → $($success.NewMethod)" -Level "Success"
+            Write-Log "- $($success.Name): $($success.PreviousMethod) -> $($success.NewMethod)" -Level "Success"
         }
     }
 }
