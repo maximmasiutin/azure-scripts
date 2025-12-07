@@ -1,9 +1,12 @@
 # Standard Deviation Health Status Monitor
 
 ## Overview
-The **Standard Deviation Health Status Monitor** is a website monitoring tool that evaluates the health of websites using various metrics such as latency, error rate, and the standard deviation of latency. The program periodically checks the specified website, calculates relevant statistics, and determines the health status based on predefined thresholds. Additionally, it supports storing the results in Azure Blob Storage.
+The **Standard Deviation Health Status Monitor** is an advanced website monitoring tool designed to measure not just availability, but **stability**. Unlike simple monitors that only check if a site is "up" or "down", this tool calculates the **standard deviation of latency** to detect inconsistent performance (jitter). High standard deviation often precedes outages or indicates a degraded user experience that averages alone would miss.
+
+The program periodically checks the specified website, calculates relevant statistics, and determines the health status based on predefined thresholds. Additionally, it supports storing the results in Azure Blob Storage.
 
 ## Features
+- **Stability Analysis**: Calculates the standard deviation of latency to identify unstable responses.
 - Monitors website latency and error rates.
 - Calculates average and standard deviation of latency.
 - Determines website health status based on defined thresholds.
