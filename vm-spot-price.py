@@ -9,10 +9,18 @@
 # Examples of use:
 #   python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
 #   python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"
-
 #   python vm-spot-price.py --sku-pattern "B8s_v2" --series-pattern "Bsv2" --non-spot --return-region
 #   python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2"
 #   python vm-spot-price.py --sku-pattern "B2ts_v2" --series-pattern "Bsv2"
+#
+# Multi-VM comparison (find cheapest spot across multiple VM sizes):
+#   python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
+#   python vm-spot-price.py --vm-sizes "B4ls_v2,B4s_v2,D4as_v5"
+#
+# PowerShell usage (--return-region outputs: "region vmsize"):
+#   $result = python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2" --return-region
+#   $region, $vmSize = $result -split ' '
+#   New-AzVM -ResourceGroupName $rg -Name $vmName -Location $region -Size $vmSize ...
 
 from argparse import ArgumentParser, Namespace
 from json import JSONDecodeError
@@ -162,8 +170,32 @@ def print_progress(current: int, total: int, prefix: str = 'Progress') -> None:
     percent = (current / total) * 100
     bar_length = 50
     filled_length = int(bar_length * current // total)
-    bar = '█' * filled_length + '-' * (bar_length - filled_length)
+    bar = '#' * filled_length + '-' * (bar_length - filled_length)
     print(f'\r{prefix}: |{bar}| {percent:.1f}%', end='', flush=True)
+
+
+def extract_series_from_vm_size(vm_size: str) -> str:
+    """Extract series name from VM size for API query.
+
+    Examples:
+        D4pls_v5 -> Dplsv5
+        F4s_v2 -> Fsv2
+        D4as_v5 -> Dasv5
+        B4ls_v2 -> Blsv2
+    """
+    import re
+    # Remove leading Standard_ if present
+    vm_size = vm_size.replace("Standard_", "")
+    # Remove numeric part (the vCPU count)
+    # Pattern: letter(s) + digits + rest
+    match = re.match(r'^([A-Za-z]+)(\d+)(.*)$', vm_size)
+    if match:
+        prefix = match.group(1)  # e.g., 'D', 'F', 'B'
+        suffix = match.group(3)  # e.g., 'pls_v5', 's_v2'
+        # Remove underscores for series name
+        series = (prefix + suffix).replace("_", "")
+        return series
+    return vm_size.replace("_", "")
 
 
 def main() -> None:
@@ -175,6 +207,7 @@ def main() -> None:
     parser.add_argument('--cpu', default=DEFAULT_SEARCH_VMSIZE, type=int, help='Number of CPUs (default: %(default)s)')
     parser.add_argument('--sku-pattern', default=DEFAULT_SEARCH_VMPATTERN, type=str, help='VM instance size SKU pattern (default: %(default)s)')
     parser.add_argument('--series-pattern', default=DEFAULT_SEARCH_VMPATTERN, type=str, help='VM instance size Series pattern (optional)')
+    parser.add_argument('--vm-sizes', type=str, help='Comma-separated list of VM sizes (e.g., D4pls_v5,D4ps_v5,F4s_v2). Overrides --sku-pattern and --series-pattern')
     parser.add_argument('--non-spot', action='store_true', help='Only return non-spot instances')
     parser.add_argument('--low-priority', action='store_true', help='Include low priority instances (by default, skip VMs with "Low Priority" in meterName)')
     parser.add_argument('--return-region', action='store_true', help='Return only one region output if found')
@@ -196,12 +229,6 @@ def main() -> None:
         print("Configuration is valid.")
         return
 
-    sku_pattern: str = args.sku_pattern
-    series_pattern: str = args.series_pattern
-    if not series_pattern:
-        series_pattern = sku_pattern
-    sku: str = sku_pattern.replace("#", str(args.cpu))
-    series: str = series_pattern.replace("#", "").replace("_", "")
     non_spot: bool = args.non_spot
     low_priority: bool = args.low_priority
     return_region: bool = args.return_region
@@ -220,61 +247,100 @@ def main() -> None:
         else:
             logging.getLogger().setLevel(logging.DEBUG)
 
-    # Build API query
+    # Build list of VM sizes to query
+    vm_sizes_list: List[tuple] = []  # List of (sku, series) tuples
+
+    if args.vm_sizes:
+        # Parse comma-separated VM sizes
+        for vm_size in args.vm_sizes.split(','):
+            vm_size = vm_size.strip()
+            if not vm_size:
+                continue
+            series = extract_series_from_vm_size(vm_size)
+            vm_sizes_list.append((vm_size, series))
+        if not vm_sizes_list:
+            logging.error("No valid VM sizes provided in --vm-sizes")
+            exit(1)
+    else:
+        # Use legacy sku-pattern and series-pattern
+        sku_pattern: str = args.sku_pattern
+        series_pattern: str = args.series_pattern
+        if not series_pattern:
+            series_pattern = sku_pattern
+        sku: str = sku_pattern.replace("#", str(args.cpu))
+        series: str = series_pattern.replace("#", "").replace("_", "")
+        vm_sizes_list.append((sku, series))
+
     api_url: str = "https://prices.azure.com/api/retail/prices"
-    query: str = f"armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
-
-    if not non_spot:
-        query += " and contains(meterName, 'Spot')"
-
-    if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
-        windows_suffix: str = ""
-        if DEFAULT_SEARCH_VMWINDOWS:
-            windows_suffix = " Windows"
-        else:
-            if not DEFAULT_SEARCH_VMLINUX:
-                logging.error("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
-                exit(1)
-        query = query + f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
 
     if args.dry_run:
-        print("DRY RUN - API Query:")
+        print("DRY RUN - API Queries:")
         print(f"URL: {api_url}")
-        print(f"Filter: {query}")
-        print(f"SKU: {sku}")
-        print(f"Series: {series}")
+        for sku, series in vm_sizes_list:
+            query = f"armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
+            if not non_spot:
+                query += " and contains(meterName, 'Spot')"
+            if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
+                windows_suffix = " Windows" if DEFAULT_SEARCH_VMWINDOWS else ""
+                if not DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
+                    logging.error("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
+                    exit(1)
+                query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+            print(f"SKU: {sku}, Series: {series}")
+            print(f"Filter: {query}")
+            print()
         return
-
-    logging.debug(f"Query: {query}")
-    logging.debug(f"URL: {api_url}")
 
     # Create session and fetch data
     session = create_resilient_session()
-    page_count = 0
-    max_pages = 50  # Safety limit
+    max_pages = 50  # Safety limit per VM size
 
     try:
-        print("Fetching Azure VM pricing data...")
+        if not return_region:
+            print(f"Fetching Azure VM pricing data for {len(vm_sizes_list)} VM size(s)...")
 
-        # Initial request
-        json_data = fetch_pricing_data(api_url, {"$filter": query}, session)
-        build_pricing_table(json_data, table_data, non_spot, low_priority)
+        for idx, (sku, series) in enumerate(vm_sizes_list):
+            if len(vm_sizes_list) > 1 and not return_region:
+                print(f"\n[{idx + 1}/{len(vm_sizes_list)}] Querying {sku} (series: {series})...")
 
-        next_page: str = json_data.get("NextPageLink", "")
-        page_count = 1
+            # Build query for this VM size
+            query = f"armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
 
-        # Follow pagination
-        while next_page and page_count < max_pages:
-            print_progress(page_count, min(page_count + 10, max_pages), "Fetching pages")
-            json_data = fetch_pricing_data(next_page, {}, session)
-            next_page = json_data.get("NextPageLink", "")
+            if not non_spot:
+                query += " and contains(meterName, 'Spot')"
+
+            if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
+                windows_suffix = ""
+                if DEFAULT_SEARCH_VMWINDOWS:
+                    windows_suffix = " Windows"
+                else:
+                    if not DEFAULT_SEARCH_VMLINUX:
+                        logging.error("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
+                        exit(1)
+                query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+
+            logging.debug(f"Query: {query}")
+
+            # Initial request
+            json_data = fetch_pricing_data(api_url, {"$filter": query}, session)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
-            page_count += 1
 
-        if page_count >= max_pages and next_page:
-            print(f"\nWarning: Reached maximum page limit ({max_pages}). Results may be incomplete.")
-        elif page_count > 1:
-            print()  # New line after progress bar
+            next_page: str = json_data.get("NextPageLink", "")
+            page_count = 1
+
+            # Follow pagination
+            while next_page and page_count < max_pages:
+                if not return_region:
+                    print_progress(page_count, min(page_count + 10, max_pages), "Fetching pages")
+                json_data = fetch_pricing_data(next_page, {}, session)
+                next_page = json_data.get("NextPageLink", "")
+                build_pricing_table(json_data, table_data, non_spot, low_priority)
+                page_count += 1
+
+            if page_count >= max_pages and next_page and not return_region:
+                print(f"\nWarning: Reached maximum page limit ({max_pages}) for {sku}. Results may be incomplete.")
+            elif page_count > 1 and not return_region:
+                print()  # New line after progress bar
 
     except Exception as e:
         logging.error(f"Failed to fetch pricing data: {e}")
@@ -289,17 +355,19 @@ def main() -> None:
     # Sort by price (element [1] is retail price)
     table_data.sort(key=lambda x: float(x[1]))
 
-    print(f"Found {len(table_data)} pricing entries")
-
     # Output results
     if return_region:
         if table_data:
             region: str = table_data[0][3]
-            print(region)
+            vm_size: str = table_data[0][0]  # SKU e.g., Standard_D4pls_v5
+            # Output format: region vmsize (space-separated for PowerShell parsing)
+            # Usage in PowerShell: $region, $vmSize = (python vm-spot-price.py ...) -split ' '
+            print(f"{region} {vm_size}")
         else:
             logging.error("No region found")
             exit(1)
     else:
+        print(f"Found {len(table_data)} pricing entries")
         content = format_output(table_data, args.output_format)
 
         if args.output_file:
