@@ -28,7 +28,8 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - Exclusion Filters: Exclude specific regions or VM sizes via command line or file
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
-   - PowerShell Integration: `--return-region` outputs "region vmsize" format for easy parsing
+   - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
+   - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format (e.g., "eastus Standard_D4as_v5 0.015 1 Hour") for easy parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
    - Examples:
      ```bash
@@ -45,7 +46,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
      # PowerShell integration
      # $result = python vm-spot-price.py --vm-sizes "D4pls_v5,F4s_v2" --return-region
-     # $region, $vmSize = $result -split ' '
+     # $region, $vmSize, $price, $unit = $result -split ' ', 4
      # New-AzVM -Location $region -Size $vmSize -Priority Spot ...
      ```
 
@@ -93,7 +94,9 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Automatic Quota Request**: Use `-RequestQuota` switch to automatically create an Azure Support ticket if spot quota is insufficient in the target region.
    - **Custom Initialization**: Supports passing cloud-init scripts via `-CustomData` or downloading from `-InitScriptUrl`.
    - **Network Flexibility**: Supports `-NoPublicIP` (default: creates public IP) and `-UseNatGateway`.
-   - **Resiliency**: Auto-detects supported regions and blacklists specific VM sizes if unavailable.
+   - **Resiliency**: Auto-detects supported regions and blacklists specific VM sizes if unavailable. Robust error handling ensures stability.
+   - **Clean Logs**: Automatically suppresses Azure PowerShell breaking change warnings to reduce noise.
+   - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
 
 7. **set-storage-account-content-headers.ps1**: Static website optimization
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites

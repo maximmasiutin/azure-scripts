@@ -48,9 +48,13 @@ param(
     # Options
     [switch]$SkipQuotaCheck,
     [switch]$Force,
+    [switch]$ForceOverwrite,  # Force resource overwrite without prompting
     [switch]$RequestQuota,  # Attempt to auto-request quota increase on failure
     [switch]$BlockSSH       # If set, NSG will be created but SSH traffic blocked (default: allowed)
 )
+
+# Suppress Azure breaking change warnings to clean up logs
+$env:SuppressAzurePowerShellBreakingChangeWarnings = "true"
 
 # ==== HELPER FUNCTIONS ====
 
@@ -386,22 +390,42 @@ $rg = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
 
 if (-not $rg) {
     Write-Log "Creating resource group: $ResourceGroupName in $Location"
-    $rg = New-AzResourceGroup -Name $ResourceGroupName -Location $Location
+    try {
+        $rgParams = @{
+            Name = $ResourceGroupName
+            Location = $Location
+            ErrorAction = "Stop"
+        }
+        if ($ForceOverwrite) { $rgParams.Force = $true }
+        $rg = New-AzResourceGroup @rgParams
+    }
+    catch {
+        Write-Log "Error creating resource group '$ResourceGroupName': $($_.Exception.Message)" "ERROR"
+        return @{ Success = $false; Error = "Failed to create Resource Group: $($_.Exception.Message)" }
+    }
 } else {
     Write-Log "Using existing resource group: $ResourceGroupName"
 }
 
-# ==== VIRTUAL NETWORK ====
-Write-Log "Checking virtual network..."
-$vnet = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+    # ==== VIRTUAL NETWORK ====
+    Write-Log "Checking virtual network..."
+    $vnet = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
 
-if (-not $vnet) {
-    Write-Log "Creating virtual network: $NetworkName"
-    try {
-        $subnetConfig = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetAddressPrefix
-        $vnet = New-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -Location $Location -AddressPrefix $VnetAddressPrefix -Subnet $subnetConfig -ErrorAction Stop
-    }
-    catch {
+    if (-not $vnet) {
+        Write-Log "Creating virtual network: $NetworkName"
+        try {
+            $subnetConfig = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetAddressPrefix
+            $vnetParams = @{
+                Name = $NetworkName
+                ResourceGroupName = $ResourceGroupName
+                Location = $Location
+                AddressPrefix = $VnetAddressPrefix
+                Subnet = $subnetConfig
+                ErrorAction = "Stop"
+            }
+            if ($ForceOverwrite) { $vnetParams.Force = $true }
+            $vnet = New-AzVirtualNetwork @vnetParams
+        }    catch {
         $errorMsg = $_.Exception.Message
         Write-Log "Error creating virtual network: $errorMsg" "ERROR"
 
@@ -421,38 +445,77 @@ if (-not $vnet) {
 }
 
 # Get subnet ID
-$subnetId = ($vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }).Id
-if (-not $subnetId) {
-    if ($vnet.Subnets.Count -gt 0) {
-        $subnetId = $vnet.Subnets[0].Id
-        Write-Log "Using first available subnet" "DEBUG"
-    } else {
-        Write-Log "No subnets found, creating: $SubnetName"
-        $subnetConfig = Add-AzVirtualNetworkSubnetConfig -Name $SubnetName -VirtualNetwork $vnet -AddressPrefix $SubnetAddressPrefix
-        $vnet | Set-AzVirtualNetwork | Out-Null
-        $vnet = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName
-        $subnetId = ($vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }).Id
+try {
+    $subnetId = ($vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }).Id
+    if (-not $subnetId) {
+        if ($vnet.Subnets.Count -gt 0) {
+            $subnetId = $vnet.Subnets[0].Id
+            Write-Log "Using first available subnet: $($vnet.Subnets[0].Name)" "DEBUG"
+        } else {
+            Write-Log "No subnets found, creating: $SubnetName"
+            $subnetConfig = Add-AzVirtualNetworkSubnetConfig -Name $SubnetName -VirtualNetwork $vnet -AddressPrefix $SubnetAddressPrefix -ErrorAction Stop
+            
+            # Use Set-AzVirtualNetwork with error handling
+            $vnet = $vnet | Set-AzVirtualNetwork -ErrorAction Stop
+            
+            # Refresh VNet object to get new subnet ID
+            $vnet = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+            $subnetId = ($vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }).Id
+            
+            if (-not $subnetId) {
+                 throw "Subnet creation appeared successful but subnet ID is null"
+            }
+        }
     }
+} catch {
+    Write-Log "Error configuring subnet: $($_.Exception.Message)" "ERROR"
+    return @{ Success = $false; Error = "Failed to configure subnet: $($_.Exception.Message)" }
 }
 
 # ==== NAT GATEWAY (if requested) ====
-if ($NoPublicIP -and $UseNatGateway) {
-    $natGwName = "$NetworkName-natgw"
-    $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
+    if ($NoPublicIP -and $UseNatGateway) {
+        $natGwName = "$NetworkName-natgw"
+        $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
 
-    if (-not $natGw) {
-        Write-Log "Creating NAT Gateway: $natGwName"
-        $natPip = New-AzPublicIpAddress -Name "$natGwName-pip" -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard
-        $natGw = New-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -Location $Location -PublicIpAddress $natPip -Sku Standard -IdleTimeoutInMinutes 10
+        if (-not $natGw) {
+            try {
+                Write-Log "Creating NAT Gateway: $natGwName"
+                
+                $pipParams = @{
+                    Name = "$natGwName-pip"
+                    ResourceGroupName = $ResourceGroupName
+                    Location = $Location
+                    AllocationMethod = "Static"
+                    Sku = "Standard"
+                    ErrorAction = "Stop"
+                }
+                if ($ForceOverwrite) { $pipParams.Force = $true }
+                $natPip = New-AzPublicIpAddress @pipParams
 
-        $subnet = Get-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName
-        Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName -AddressPrefix $subnet.AddressPrefix -NatGateway $natGw | Out-Null
-        $vnet | Set-AzVirtualNetwork | Out-Null
-        Write-Log "NAT Gateway created and associated with subnet"
-    } else {
-        Write-Log "Using existing NAT Gateway: $natGwName"
-    }
-} elseif ($NoPublicIP) {
+                $natGwParams = @{
+                    ResourceGroupName = $ResourceGroupName
+                    Name = $natGwName
+                    Location = $Location
+                    PublicIpAddress = $natPip
+                    Sku = "Standard"
+                    IdleTimeoutInMinutes = 10
+                    ErrorAction = "Stop"
+                }
+                if ($ForceOverwrite) { $natGwParams.Force = $true }
+                $natGw = New-AzNatGateway @natGwParams
+    
+                $subnet = Get-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName
+                Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName -AddressPrefix $subnet.AddressPrefix -NatGateway $natGw | Out-Null
+                $vnet | Set-AzVirtualNetwork | Out-Null
+                Write-Log "NAT Gateway created and associated with subnet" "SUCCESS"
+            } catch {
+                Write-Log "Error creating/configuring NAT Gateway: $($_.Exception.Message)" "ERROR"
+                # Don't fail the whole script, but warn
+            }
+        } else {
+            Write-Log "Using existing NAT Gateway: $natGwName"
+        }
+    } elseif ($NoPublicIP) {
     Write-Log "WARNING: No public IP and no NAT Gateway - VM will have no outbound internet!" "WARN"
 } else {
     Write-Log "Skipping NAT Gateway creation (UseNatGateway not specified)" "INFO"
@@ -475,7 +538,9 @@ foreach ($vmN in $vmNames) {
         ResourceGroupName = $ResourceGroupName
         Location = $Location
         SubnetId = $subnetId
+        ErrorAction = "Stop"
     }
+    if ($ForceOverwrite) { $nicParams.Force = $true }
 
     # Check if VM size supports accelerated networking
     $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
@@ -495,25 +560,54 @@ foreach ($vmN in $vmNames) {
     $nsg = $null
     if (-not $NoPublicIP) {
         $pipName = "$vmN-pip"
-        $pip = New-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard
-        $nicParams.PublicIpAddressId = $pip.Id
-        Write-Log "Created public IP: $pipName"
+        try {
+            $pipParams = @{
+                Name = $pipName
+                ResourceGroupName = $ResourceGroupName
+                Location = $Location
+                AllocationMethod = "Static"
+                Sku = "Standard"
+                ErrorAction = "Stop"
+            }
+            if ($ForceOverwrite) { $pipParams.Force = $true }
+            $pip = New-AzPublicIpAddress @pipParams
+            $nicParams.PublicIpAddressId = $pip.Id
+            Write-Log "Created public IP: $pipName"
+        } catch {
+             Write-Log "Error creating Public IP '$pipName': $($_.Exception.Message)" "ERROR"
+             $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $($_.Exception.Message)" }
+             continue
+        }
 
         # Create NSG
         $nsgName = "$vmN-nsg"
         $nsg = Get-AzNetworkSecurityGroup -Name $nsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
         
         if (-not $nsg) {
-            if ($BlockSSH) {
-                Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
-                $nsg = New-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Location $Location -Name $nsgName
-            } else {
-                Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
-                $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
-                    -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
-                    -SourceAddressPrefix Internet -SourcePortRange * `
-                    -DestinationAddressPrefix * -DestinationPortRange 22
-                $nsg = New-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Location $Location -Name $nsgName -SecurityRules $ruleSSH
+            try {
+                $nsgParams = @{
+                    ResourceGroupName = $ResourceGroupName
+                    Location = $Location
+                    Name = $nsgName
+                    ErrorAction = "Stop"
+                }
+                if ($ForceOverwrite) { $nsgParams.Force = $true }
+
+                if ($BlockSSH) {
+                    Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
+                    $nsg = New-AzNetworkSecurityGroup @nsgParams
+                } else {
+                    Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
+                    $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
+                        -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
+                        -SourceAddressPrefix Internet -SourcePortRange * `
+                        -DestinationAddressPrefix * -DestinationPortRange 22
+                    $nsg = New-AzNetworkSecurityGroup @nsgParams -SecurityRules $ruleSSH
+                }
+            } catch {
+                 Write-Log "Error creating NSG '$nsgName': $($_.Exception.Message)" "ERROR"
+                 $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NSG: $($_.Exception.Message)" }
+                 continue
             }
         } else {
             Write-Log "Using existing NSG: $nsgName"
@@ -523,58 +617,96 @@ foreach ($vmN in $vmNames) {
         Write-Log "Skipping public IP creation (NoPublicIP specified)" "INFO"
     }
 
-    $nic = New-AzNetworkInterface @nicParams
-
-    # VM Config
-    $vmConfig = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
-
-    if ($SecurityType) {
-        $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
+    try {
+        $nic = New-AzNetworkInterface @nicParams
+    } catch {
+         Write-Log "Error creating NIC '$nicName': $($_.Exception.Message)" "ERROR"
+         $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NIC: $($_.Exception.Message)" }
+         continue
     }
 
-    $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $ImagePublisher -Offer $ImageOffer -Skus $ImageSku -Version $ImageVersion
-    $vmConfig = Add-AzVMNetworkInterface -VM $vmConfig -Id $nic.Id -DeleteOption "Delete"
-    $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
+    try {
+        # VM Config
+        $vmConfig = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
 
-    if ($SshPublicKey) {
-        $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential -DisablePasswordAuthentication
-        $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $SshPublicKey -Path "/home/$AdminUsername/.ssh/authorized_keys"
-    } else {
-        $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential
-    }
+        if ($SecurityType) {
+            $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
+        }
 
-    # Custom data (cloud-init)
-    if ($CustomData) {
-        $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
-        $vmConfig.OSProfile.CustomData = $encodedData
-        Write-Log "Added cloud-init custom data"
+        $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $ImagePublisher -Offer $ImageOffer -Skus $ImageSku -Version $ImageVersion
+        $vmConfig = Add-AzVMNetworkInterface -VM $vmConfig -Id $nic.Id -DeleteOption "Delete"
+            $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
+            $vmConfig = Set-AzVMBootDiagnostic -VM $vmConfig -Enable
+        
+            if ($SshPublicKey) {            $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential -DisablePasswordAuthentication
+            $vmConfig = Add-AzVMSshPublicKey -VM $vmConfig -KeyData $SshPublicKey -Path "/home/$AdminUsername/.ssh/authorized_keys"
+        } else {
+            $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential
+        }
+
+        # Custom data (cloud-init)
+        if ($CustomData) {
+            $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
+            $vmConfig.OSProfile.CustomData = $encodedData
+            Write-Log "Added cloud-init custom data"
+        }
+    } catch {
+         Write-Log "Error constructing VM config for '$vmN': $($_.Exception.Message)" "ERROR"
+         $results += @{ VMName = $vmN; Success = $false; Error = "Failed to construct VM configuration: $($_.Exception.Message)" }
+         continue
     }
 
     # Create VM
     try {
-        $vm = New-AzVM -ResourceGroupName $ResourceGroupName -Location $Location -VM $vmConfig -Verbose
+        $vmParams = @{
+            ResourceGroupName = $ResourceGroupName
+            Location = $Location
+            VM = $vmConfig
+            Verbose = $true
+            ErrorAction = "Stop"
+        }
+        # New-AzVM does not support -Force
+        
+        $vm = New-AzVM @vmParams
         Write-Log "VM created: $vmN" "SUCCESS"
 
         # Run init script via URL (if provided)
         if ($InitScriptUrl) {
-            $initCmd = "cd /tmp && wget -q '$InitScriptUrl' -O init.bash && chmod +x init.bash && ./init.bash > /var/log/init.log 2>&1"
-            Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $vmN -CommandId 'RunShellScript' -ScriptString $initCmd -AsJob
-            Write-Log "Init script (URL) started as background job"
+            try {
+                $initCmd = "cd /tmp && wget -q '$InitScriptUrl' -O init.bash && chmod +x init.bash && ./init.bash > /var/log/init.log 2>&1"
+                Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $vmN -CommandId 'RunShellScript' -ScriptString $initCmd -AsJob -ErrorAction Stop
+                Write-Log "Init script (URL) started as background job"
+            } catch {
+                Write-Log "Failed to start init script (URL) job: $($_.Exception.Message)" "WARN"
+            }
         }
 
         # Run local init script via RunCommand (if provided and no cloud-init)
         if ($InitScriptPath -and (Test-Path $InitScriptPath) -and -not $CustomData) {
-            $scriptContent = Get-Content $InitScriptPath -Raw
-            Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $vmN -CommandId 'RunShellScript' -ScriptString $scriptContent -AsJob
-            Write-Log "Init script (local) started as background job"
+            try {
+                $scriptContent = Get-Content $InitScriptPath -Raw
+                Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $vmN -CommandId 'RunShellScript' -ScriptString $scriptContent -AsJob -ErrorAction Stop
+                Write-Log "Init script (local) started as background job"
+            } catch {
+                Write-Log "Failed to start init script (local) job: $($_.Exception.Message)" "WARN"
+            }
         }
 
         # Get public IP
         $publicIp = $null
         if (-not $NoPublicIP -and $pipName) {
-            $publicIp = (Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName).IpAddress
-            Write-Log "Public IP: $publicIp"
-            Write-Log "SSH: ssh $AdminUsername@$publicIp"
+            try {
+                $publicIpObj = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+                $publicIp = $publicIpObj.IpAddress
+                if ($publicIp) {
+                    Write-Log "Public IP: $publicIp"
+                    Write-Log "SSH: ssh $AdminUsername@$publicIp"
+                } else {
+                     Write-Log "Public IP resource created but no IP address assigned yet." "WARN"
+                }
+            } catch {
+                 Write-Log "Failed to retrieve Public IP address: $($_.Exception.Message)" "WARN"
+            }
         }
 
         $results += @{
