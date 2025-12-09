@@ -17,9 +17,9 @@
 #   python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
 #   python vm-spot-price.py --vm-sizes "B4ls_v2,B4s_v2,D4as_v5"
 #
-# PowerShell usage (--return-region outputs: "region vmsize"):
+# PowerShell usage (--return-region outputs: "region vmsize price unit"):
 #   $result = python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2" --return-region
-#   $region, $vmSize = $result -split ' '
+#   $region, $vmSize, $price, $unit = $result -split ' ', 4
 #   New-AzVM -ResourceGroupName $rg -Name $vmName -Location $region -Size $vmSize ...
 
 from argparse import ArgumentParser, Namespace
@@ -118,6 +118,9 @@ def build_pricing_table(json_data: Dict[str, Any], table_data: List[List[Any]], 
 
             # Validate required fields
             if not all([arm_sku_name, arm_region_name, meter_name, product_name]):
+                continue
+
+            if retail_price <= 0:
                 continue
 
             if non_spot and "Spot" in meter_name:
@@ -420,9 +423,11 @@ def main() -> None:
         if table_data:
             region: str = table_data[0][3]
             vm_size: str = table_data[0][0]  # SKU e.g., Standard_D4pls_v5
-            # Output format: region vmsize (space-separated for PowerShell parsing)
-            # Usage in PowerShell: $region, $vmSize = (python vm-spot-price.py ...) -split ' '
-            print(f"{region} {vm_size}")
+            price: float = table_data[0][1]
+            unit: str = table_data[0][2]
+            # Output format: region vmsize price unit (space-separated)
+            # Usage in PowerShell: $region, $vmSize, $price, $unit = (python vm-spot-price.py ...) -split ' ', 4
+            print(f"{region} {vm_size} {price} {unit}")
         else:
             logging.error("No region found")
             exit(1)
