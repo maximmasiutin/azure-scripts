@@ -152,6 +152,10 @@ An example of an unstable website can be seen at https://web.archive.org/web/202
 
 - `--use-session`: Use persistent HTTP session with keep-alive (default: false).
 
+- `--export-file`: Export all historical data to the specified file and exit. This parameter requires `--export-format` to also be specified.
+
+- `--export-format`: The format for the exported data (either `json` or `csv`). This parameter is required when `--export-file` is specified.
+
 - `--test`: Test URL connectivity and exit without collecting data. Makes a single HTTP request, reports status/latency, detects Cloudflare blocking, and exits with code 0 (success) or 1 (blocked/error).
 
 - `--debug`: Enable debug output.
