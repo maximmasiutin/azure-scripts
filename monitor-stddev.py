@@ -21,6 +21,7 @@ from types import FrameType
 from abc import ABC, abstractmethod
 import signal
 import sys
+import csv
 
 from PIL import Image, ImageDraw, ImageFont
 from curl_cffi import requests as cffi_requests  # type: ignore
@@ -46,6 +47,44 @@ def cleanup_old_data(data_list: List[Any], max_size: int) -> None:
     """Clean up old data to prevent memory leaks."""
     if len(data_list) > max_size:
         del data_list[:len(data_list) - max_size]
+
+
+def export_data(data: List[Dict[str, Union[str, int]]], filename: str, format_type: str, debug_output: bool) -> None:
+    """Export data to a file in the specified format."""
+    if not data:
+        print("Warning: No historical data found to export.", file=stderr)
+
+    if debug_output:
+        print(f"Exporting {len(data)} records to {filename} in {format_type} format...")
+
+    try:
+        if format_type == 'json':
+            with open(filename, 'w', encoding='utf-8') as f:
+                dump(data, f, indent=4)
+        elif format_type == 'csv':
+            if not data:
+                # Create an empty file with standard headers
+                with open(filename, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(['timestamp', 'healthy'])
+            else:
+                # Collect all unique keys to handle potentially inconsistent records
+                all_keys: set[str] = set()
+                for d in data:
+                    all_keys.update(d.keys())
+                fieldnames: List[str] = sorted(list(all_keys))
+
+                with open(filename, 'w', encoding='utf-8', newline='') as f:
+                    writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    writer.writeheader()
+                    writer.writerows(data)
+
+        print(f"Successfully exported data to {filename}")
+
+    except (IOError, OSError) as e:
+        print(f"Error writing to file {filename}: {e}", file=stderr)
+    except Exception as e:
+        print(f"An unexpected error occurred during export: {e}", file=stderr)
 
 
 class DataStorage(ABC):
@@ -838,6 +877,8 @@ def main() -> None:
     parser.add_argument('--use-session', action='store_true', help='Use persistent HTTP session with keep-alive')
     parser.add_argument('--debug', action='store_true', help='Enable debug output')
     parser.add_argument('--test', action='store_true', help='Test URL connectivity and exit (no data collection)')
+    parser.add_argument('--export-file', type=str, help='Export all historical data to the specified file and exit.')
+    parser.add_argument('--export-format', type=str, choices=['json', 'csv'], help='Format for the exported data (json or csv).')
 
     args: Namespace = parser.parse_args()
 
@@ -871,6 +912,13 @@ def main() -> None:
         else:
             load_history_filename = history_filename
         storage = JsonFileStorage(load_history_filename, debug_output=args.debug)
+
+    if args.export_file:
+        if not args.export_format:
+            print("Error: --export-format is required when using --export-file.", file=sys.stderr)
+            sys.exit(1)
+        export_data(storage.historical_data, args.export_file, args.export_format, args.debug)
+        return
 
     storage.historical_data = trim_data(storage.historical_data)
 
