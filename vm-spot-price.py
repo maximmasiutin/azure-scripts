@@ -17,6 +17,11 @@
 #   python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
 #   python vm-spot-price.py --vm-sizes "B4ls_v2,B4s_v2,D4as_v5"
 #
+# Find cheapest per-core pricing within a vCPU range:
+#   python vm-spot-price.py --min-cores 2 --max-cores 64 --no-burstable
+#   python vm-spot-price.py --min-cores 4 --max-cores 16 --burstable-only
+#   python vm-spot-price.py --min-cores 2 --max-cores 8 --series "Dv5,Fsv2,Dasv5"
+#
 # PowerShell usage (--return-region outputs: "region vmsize price unit"):
 #   $result = python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2" --return-region
 #   $region, $vmSize, $price, $unit = $result -split ' ', 4
@@ -201,6 +206,238 @@ def extract_series_from_vm_size(vm_size: str) -> str:
     return vm_size.replace("_", "")
 
 
+def extract_cores_from_sku(sku_name: str) -> int:
+    """Extract vCPU count from SKU name.
+
+    Examples:
+        Standard_D4pls_v5 -> 4
+        Standard_F8s_v2 -> 8
+        Standard_B2ts_v2 -> 2
+        Standard_E96as_v5 -> 96
+    """
+    import re
+    # Remove Standard_ prefix if present
+    sku_name = sku_name.replace("Standard_", "")
+    # Pattern: letter(s) + digits (the core count)
+    match = re.match(r'^[A-Za-z]+(\d+)', sku_name)
+    if match:
+        return int(match.group(1))
+    return 0
+
+
+def is_burstable_vm(sku_name: str) -> bool:
+    """Check if VM is burstable (B-series).
+
+    Examples:
+        Standard_B4ls_v2 -> True
+        Standard_D4pls_v5 -> False
+    """
+    # Remove Standard_ prefix if present
+    sku_name = sku_name.replace("Standard_", "")
+    # B-series VMs start with 'B'
+    return sku_name.upper().startswith('B')
+
+
+# Comprehensive list of Azure VM series for per-core search
+# Based on official Azure documentation as of 2024-2025
+
+VM_SERIES_BURSTABLE = ["Bsv2", "Blsv2", "Bpsv2", "Bplsv2"]
+
+# =============================================================================
+# COMPUTE OPTIMIZED (F-family) - High CPU-to-memory ratio
+# =============================================================================
+
+# Intel Compute Optimized
+VM_SERIES_F_INTEL = [
+    "Fsv2",      # Intel Xeon Platinum 8272CL (Cascade Lake), 72 vCPUs, 2 GiB/vCPU
+]
+
+# AMD v6 Compute Optimized (EPYC 9004 Genoa @ 3.7 GHz)
+VM_SERIES_F_AMD_V6 = [
+    "Fasv6",     # 64 vCPUs, 256 GiB (4:1)
+    "Falsv6",    # 64 vCPUs, 128 GiB (2:1, low memory)
+    "Famsv6",    # 64 vCPUs, 512 GiB (8:1, high memory)
+]
+
+# AMD v7 Compute Optimized (EPYC 9005 Turin @ 4.5 GHz) - Preview
+VM_SERIES_F_AMD_V7 = [
+    "Fasv7",     # 80 vCPUs, 320 GiB (4:1)
+    "Fadsv7",    # 80 vCPUs + local disk
+    "Falsv7",    # 80 vCPUs, 160 GiB (2:1)
+    "Faldsv7",   # 80 vCPUs + local disk
+    "Famsv7",    # 80 vCPUs, 640 GiB (8:1)
+    "Famdsv7",   # 80 vCPUs + local disk
+]
+
+# FX Series - High frequency Intel (4.0 GHz)
+VM_SERIES_FX = [
+    "FXmdsv2",   # Intel Xeon Gold 6246R, 48 vCPUs, 1152 GiB, EDA workloads
+]
+
+# =============================================================================
+# GENERAL PURPOSE (D-family) - Balanced CPU-to-memory ratio
+# =============================================================================
+
+# Intel v5 (Xeon Platinum 8370C Ice Lake)
+VM_SERIES_D_INTEL_V5 = [
+    "Dv5", "Dsv5",       # 96 vCPUs, 384 GiB, no local disk
+    "Ddv5", "Ddsv5",     # 96 vCPUs, 384 GiB, with local disk
+    "Dlsv5", "Dldsv5",   # 96 vCPUs, 192 GiB (2:1, low memory)
+]
+
+# AMD v5 (EPYC 7763v Milan)
+VM_SERIES_D_AMD_V5 = [
+    "Dasv5", "Dadsv5",   # 96 vCPUs, 384 GiB
+]
+
+# AMD v6 (EPYC 9004 Genoa @ 3.7 GHz)
+VM_SERIES_D_AMD_V6 = [
+    "Dasv6", "Dadsv6",   # 96 vCPUs, 384 GiB (4:1)
+    "Dalsv6", "Daldsv6", # 96 vCPUs, 192 GiB (2:1)
+]
+
+# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - Preview
+VM_SERIES_D_AMD_V7 = [
+    "Dasv7", "Dadsv7",   # 160 vCPUs, 640 GiB (4:1)
+    "Dalsv7", "Daldsv7", # 160 vCPUs, 320 GiB (2:1)
+]
+
+# ARM v5 (Ampere Altra)
+VM_SERIES_D_ARM_V5 = [
+    "Dpsv5", "Dpdsv5",   # 64 vCPUs, 208 GiB (4:1)
+    "Dplsv5", "Dpldsv5", # 64 vCPUs, 128 GiB (2:1)
+]
+
+# ARM v6 (Azure Cobalt 100 @ 3.4 GHz) - Best price-performance
+VM_SERIES_D_ARM_V6 = [
+    "Dpsv6", "Dpdsv6",   # 96 vCPUs, 384 GiB (4:1)
+    "Dplsv6", "Dpldsv6", # 96 vCPUs, 192 GiB (2:1)
+]
+
+# =============================================================================
+# COMBINED LISTS
+# =============================================================================
+
+# All Compute Optimized
+VM_SERIES_COMPUTE_OPTIMIZED = (
+    VM_SERIES_F_INTEL +
+    VM_SERIES_F_AMD_V6 +
+    VM_SERIES_F_AMD_V7 +
+    VM_SERIES_FX
+)
+
+# All General Purpose (current gen)
+VM_SERIES_GENERAL_PURPOSE = (
+    VM_SERIES_D_INTEL_V5 +
+    VM_SERIES_D_AMD_V5 +
+    VM_SERIES_D_AMD_V6 +
+    VM_SERIES_D_AMD_V7 +
+    VM_SERIES_D_ARM_V5 +
+    VM_SERIES_D_ARM_V6
+)
+
+# Latest generation only (v6/v7) - for fast queries
+VM_SERIES_LATEST = (
+    # F-series latest
+    VM_SERIES_F_AMD_V6 +
+    VM_SERIES_F_AMD_V7 +
+    # D-series latest
+    VM_SERIES_D_AMD_V6 +
+    VM_SERIES_D_AMD_V7 +
+    VM_SERIES_D_ARM_V6
+)
+
+# General compute = D + F series (non-exotic)
+VM_SERIES_GENERAL_COMPUTE = VM_SERIES_GENERAL_PURPOSE + VM_SERIES_COMPUTE_OPTIMIZED
+
+# Memory optimized (E-family) - for completeness
+VM_SERIES_MEMORY_OPTIMIZED = [
+    "Ev5", "Esv5", "Edsv5", "Ebsv5", "Ebdsv5",
+    "Easv5", "Eadsv5",
+    "Epsv5", "Epdsv5",
+    "Easv6", "Eadsv6",
+    "Epsv6", "Epdsv6",
+]
+
+# All non-burstable series
+VM_SERIES_NON_BURSTABLE = VM_SERIES_GENERAL_COMPUTE + VM_SERIES_MEMORY_OPTIMIZED
+
+# All series
+VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE
+
+
+def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[List[Any]],
+                           non_spot: bool, low_priority: bool,
+                           excluded_regions: set, excluded_vm_sizes: set) -> None:
+    """Process a single pricing item for per-core mode."""
+    try:
+        arm_sku_name: str = item.get("armSkuName", "")
+        retail_price: float = float(item.get("retailPrice", 0.0))
+        unit_of_measure: str = item.get("unitOfMeasure", "")
+        arm_region_name: str = item.get("armRegionName", "")
+        meter_name: str = item.get("meterName", "")
+        product_name: str = item.get("productName", "")
+
+        if not arm_sku_name or retail_price <= 0:
+            return
+
+        # Filter Windows if only Linux requested
+        if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
+            if "Windows" in product_name:
+                return
+
+        if non_spot and "Spot" in meter_name:
+            return
+        if not low_priority and "Low Priority" in meter_name:
+            return
+
+        # Extract core count and filter
+        cores = extract_cores_from_sku(arm_sku_name)
+        if cores < args.min_cores or cores > args.max_cores:
+            return
+
+        # Filter by burstable
+        is_burstable = is_burstable_vm(arm_sku_name)
+        if args.burstable_only and not is_burstable:
+            return
+        if args.no_burstable and is_burstable:
+            return
+
+        # Filter for general-compute: only D and F series (non-burstable)
+        if getattr(args, 'general_compute', False):
+            sku_upper = arm_sku_name.replace("Standard_", "").upper()
+            # Only allow D-series and F-series (general purpose + compute optimized)
+            if not (sku_upper.startswith("D") or sku_upper.startswith("F")):
+                return
+            # Exclude burstable B-series
+            if is_burstable:
+                return
+
+        # Filter excluded regions
+        if arm_region_name.lower() in excluded_regions:
+            return
+
+        # Filter excluded VM sizes
+        normalized_sku = arm_sku_name.replace("Standard_", "").lower()
+        if normalized_sku in excluded_vm_sizes:
+            return
+
+        price_per_core = retail_price / cores
+
+        per_core_data.append([
+            arm_sku_name,
+            retail_price,
+            price_per_core,
+            cores,
+            unit_of_measure,
+            arm_region_name,
+            meter_name,
+            product_name,
+        ])
+    except (ValueError, TypeError):
+        pass
+
+
 def main() -> None:
     import logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
@@ -224,6 +461,15 @@ def main() -> None:
     parser.add_argument('--dry-run', action='store_true', help='Show API query without executing')
     parser.add_argument('--validate-config', action='store_true', help='Validate configuration and exit')
 
+    # Per-core pricing arguments
+    parser.add_argument('--min-cores', type=int, help='Minimum vCPU count for per-core pricing search')
+    parser.add_argument('--max-cores', type=int, help='Maximum vCPU count for per-core pricing search')
+    parser.add_argument('--burstable-only', action='store_true', help='Only include burstable VMs (B-series)')
+    parser.add_argument('--no-burstable', action='store_true', help='Exclude burstable VMs (B-series)')
+    parser.add_argument('--general-compute', action='store_true', help='Only D and F series (general purpose + compute optimized)')
+    parser.add_argument('--latest', action='store_true', help='Only latest gen (v6/v7): AMD Genoa/Turin, ARM Cobalt - fastest query')
+    parser.add_argument('--series', type=str, help='Comma-separated list of VM series to search (e.g., Dasv6,Fasv7)')
+
     args: Namespace = parser.parse_args()
 
     if args.validate_config:
@@ -239,6 +485,23 @@ def main() -> None:
     non_spot: bool = args.non_spot
     low_priority: bool = args.low_priority
     return_region: bool = args.return_region
+
+    # Validate per-core pricing arguments
+    per_core_mode: bool = args.min_cores is not None or args.max_cores is not None
+    if per_core_mode:
+        if args.min_cores is None:
+            args.min_cores = 1
+        if args.max_cores is None:
+            args.max_cores = 128
+        if args.min_cores > args.max_cores:
+            logging.error("--min-cores cannot be greater than --max-cores")
+            exit(1)
+        if args.burstable_only and args.no_burstable:
+            logging.error("Cannot specify both --burstable-only and --no-burstable")
+            exit(1)
+        if args.vm_sizes:
+            logging.error("Cannot use --vm-sizes with --min-cores/--max-cores")
+            exit(1)
 
     # Build excluded regions set
     excluded_regions: set = set()
@@ -296,6 +559,117 @@ def main() -> None:
             logging.getLogger().setLevel(logging.ERROR)
         else:
             logging.getLogger().setLevel(logging.DEBUG)
+
+    # Per-core pricing mode
+    if per_core_mode:
+        api_url: str = "https://prices.azure.com/api/retail/prices"
+        session = create_resilient_session()
+        max_pages = 50  # Pages per series
+
+        per_core_data: List[List[Any]] = []  # [sku, price, price_per_core, cores, unit, region, meter, product]
+
+        # Determine which series to query
+        if args.series:
+            series_list = [s.strip() for s in args.series.split(',') if s.strip()]
+        elif getattr(args, 'latest', False):
+            series_list = list(VM_SERIES_LATEST)
+        elif getattr(args, 'general_compute', False):
+            series_list = list(VM_SERIES_GENERAL_COMPUTE)
+        elif args.burstable_only:
+            series_list = list(VM_SERIES_BURSTABLE)
+        elif args.no_burstable:
+            series_list = list(VM_SERIES_NON_BURSTABLE)
+        else:
+            series_list = list(VM_SERIES_GENERAL_COMPUTE)  # Default to general compute
+
+        try:
+            if not return_region:
+                print(f"Searching for cheapest spot price per core ({args.min_cores}-{args.max_cores} vCPUs)...")
+                print(f"Querying {len(series_list)} VM series...")
+
+            for idx, series in enumerate(series_list):
+                if not return_region:
+                    print(f"\r[{idx + 1}/{len(series_list)}] {series}...", end='', flush=True)
+
+                query = f"priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
+                query += f" and productName eq 'Virtual Machines {series} Series'"
+                if not non_spot:
+                    query += " and contains(meterName, 'Spot')"
+
+                logging.debug(f"Query: {query}")
+
+                try:
+                    json_data = fetch_pricing_data(api_url, {"$filter": query}, session)
+                except Exception as e:
+                    logging.debug(f"No data for {series}: {e}")
+                    continue
+
+                items = json_data.get("Items", [])
+                next_page: str = json_data.get("NextPageLink", "")
+                page_count = 1
+
+                while next_page and page_count < max_pages:
+                    try:
+                        json_data = fetch_pricing_data(next_page, {}, session)
+                        items.extend(json_data.get("Items", []))
+                        next_page = json_data.get("NextPageLink", "")
+                        page_count += 1
+                    except Exception:
+                        break
+
+                # Process items for this series
+                for item in items:
+                    _process_per_core_item(item, args, per_core_data, non_spot, low_priority,
+                                           excluded_regions, excluded_vm_sizes)
+
+            if not return_region:
+                print()  # New line after progress
+
+        except Exception as e:
+            logging.error(f"Failed to fetch pricing data: {e}")
+            exit(1)
+        finally:
+            session.close()
+
+        if not per_core_data:
+            logging.error("No pricing data found for the specified criteria")
+            exit(1)
+
+        # Sort by price per core
+        per_core_data.sort(key=lambda x: x[2])
+
+        # Output results
+        if return_region:
+            best = per_core_data[0]
+            region = best[5]
+            vm_size = best[0]
+            price = best[1]
+            unit = best[4]
+            print(f"{region} {vm_size} {price} {unit}")
+        else:
+            print(f"\nFound {len(per_core_data)} VM options in {args.min_cores}-{args.max_cores} vCPU range")
+            print(f"Top 20 cheapest per-core options:\n")
+
+            headers = ["SKU", "$/Hour", "$/Core/Hr", "Cores", "Region"]
+            display_data = []
+            seen = set()  # Deduplicate by SKU+region
+            for row in per_core_data:
+                key = (row[0], row[5])
+                if key in seen:
+                    continue
+                seen.add(key)
+                display_data.append([
+                    row[0],  # SKU
+                    f"{row[1]:.4f}",  # Price
+                    f"{row[2]:.5f}",  # Price per core
+                    row[3],  # Cores
+                    row[5],  # Region
+                ])
+                if len(display_data) >= 20:
+                    break
+
+            print(tabulate(display_data, headers=headers, tablefmt="psql"))
+        exit(0)
 
     # Build list of VM sizes to query
     vm_sizes_list: List[tuple] = []  # List of (sku, series) tuples

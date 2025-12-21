@@ -2,11 +2,10 @@
 
 1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
-1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison to find the cheapest option across different VM sizes. Examples of use:
+1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison and per-core pricing analysis. Examples of use:
   `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"`
-  `python vm-spot-price.py --cpu 4 --sku-pattern "B#ls_v2" --series-pattern "Bsv2"`
-  `python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region`
-  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region`  
+  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region`
+  `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region`  
 1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
   `python blob-storage-price.py`  
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
@@ -26,6 +25,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 1. **vm-spot-price.py**: Find the cheapest Azure regions for spot VM instances
    - Key Features: Multi-region price comparison, custom CPU/SKU filtering, spot vs regular pricing
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
+   - **Per-Core Pricing**: Find cheapest spot price per vCPU core across VM series with `--min-cores` and `--max-cores`
    - Exclusion Filters: Exclude specific regions or VM sizes via command line or file
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
@@ -40,12 +40,24 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      # Multi-VM comparison (find cheapest across multiple sizes)
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region
 
+     # Per-core pricing (find cheapest $/core across all D and F series)
+     python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute
+     python vm-spot-price.py --min-cores 4 --max-cores 32 --latest --return-region
+     python vm-spot-price.py --min-cores 2 --max-cores 16 --series "Dasv6,Fasv7"
+
+     # Per-core filtering options
+     # --general-compute: Only D-series (general purpose) and F-series (compute optimized)
+     # --latest: Only latest generation (v6/v7) - AMD Genoa/Turin, ARM Cobalt
+     # --no-burstable: Exclude B-series burstable VMs
+     # --burstable-only: Only B-series burstable VMs
+     # --series: Comma-separated list of specific VM series
+
      # Exclude specific regions or VM sizes
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
-     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt --exclude-regions-file regions2.txt
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt
 
      # PowerShell integration
-     # $result = python vm-spot-price.py --vm-sizes "D4pls_v5,F4s_v2" --return-region
+     # $result = python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
      # $region, $vmSize, $price, $unit = $result -split ' ', 4
      # New-AzVM -Location $region -Size $vmSize -Priority Spot ...
      ```
@@ -148,6 +160,12 @@ python vm-spot-price.py --sku-pattern "B4ls_v2" --return-region
 ```bash
 python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
 # Output: centralindia Standard_D4as_v5
+```
+
+**Find cheapest spot price per core (2-64 vCPUs, D and F series):**
+```bash
+python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
+# Output: newzealandnorth Standard_F32ams_v6 0.066343 1 Hour
 ```
 
 **Monitor website with Azure integration:**
