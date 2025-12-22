@@ -11,7 +11,7 @@
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
 
-1. **create-spot-vms.ps1**: Creates a series of Azure VM spot instances automatically.
+1. **create-spot-vms.ps1**: Creates Azure Spot VMs with full ARM64 support. Auto-detects latest Ubuntu minimal image based on CPU architecture (ARM64 Cobalt/Ampere or x64 AMD/Intel).
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md).
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machine was stopped.  
@@ -26,10 +26,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Key Features: Multi-region price comparison, custom CPU/SKU filtering, spot vs regular pricing
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - **Per-Core Pricing**: Find cheapest spot price per vCPU core across VM series with `--min-cores` and `--max-cores`
-   - Exclusion Filters: Exclude specific regions or VM sizes via command line or file
+   - **ARM VM Support**: Supports ARM-based VMs (e.g., D4ps_v5, D4pls_v5) with automatic detection and proper Azure API querying
+   - Exclusion Filters: Exclude specific regions, VM sizes, or ARM VMs via `--exclude-arm`
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
-   - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format (e.g., "eastus Standard_D4as_v5 0.015 1 Hour") for easy parsing
+   - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format; `--return-region-json` outputs JSON for direct parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
    - Examples:
      ```bash
@@ -52,14 +53,21 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      # --burstable-only: Only B-series burstable VMs
      # --series: Comma-separated list of specific VM series
 
+     # ARM-based VMs (Ampere Altra processors) - automatic detection
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ARM VMs work natively
+     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm  # Exclude ARM VMs from results
+
      # Exclude specific regions or VM sizes
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt
 
-     # PowerShell integration
+     # PowerShell integration (text output)
      # $result = python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
      # $region, $vmSize, $price, $unit = $result -split ' ', 4
-     # New-AzVM -Location $region -Size $vmSize -Priority Spot ...
+
+     # PowerShell integration (JSON output - recommended)
+     # $json = python vm-spot-price.py --vm-sizes "D4as_v5,F4s_v2" --return-region-json | ConvertFrom-Json
+     # New-AzVM -Location $json.region -Size $json.vmSize -Priority Spot ...
      ```
 
 2. **blob-storage-price.py**: Compare Azure blob storage pricing across regions
@@ -100,7 +108,15 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Cost Benefit: Allows stopping VMs for cost savings without losing IP assignments
    - Automation: Bulk conversion of all public IPs in subscription
 
-6. **create-spot-vms.ps1**: Automated spot VM deployment
+6. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
+   - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
+     - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
+     - Competitive spot pricing for ARM VMs in many regions
+   - **Automatic Ubuntu Image Detection**: Queries Azure API for newest available Ubuntu
+     - Default: Latest non-LTS Ubuntu minimal (25.10) - smaller, faster boot
+     - Minimal images preferred over full server images
+     - Use `-UseLTS` to prefer LTS versions (24.04) for production workloads
+     - Use `-PreferServer` to use full server image instead of minimal
    - Features: Batch creation of multiple spot instances with consistent configuration
    - Cost Optimization: Leverages spot pricing for development/testing environments
    - **Automatic Quota Request**: Use `-RequestQuota` switch to automatically create an Azure Support ticket if spot quota is insufficient in the target region.
@@ -191,7 +207,17 @@ sudo systemctl status robust-swap-setup.service
 **Create Azure spot VMs (PowerShell 7.5+):**
 ```powershell
 # Run with pwsh (PowerShell 7.5+)
+# Default: auto-detects latest Ubuntu (25.10 minimal) - ideal for spot VMs
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm"
+
+# ARM VM with auto-detected ARM64 Ubuntu minimal image
+pwsh ./create-spot-vms.ps1 -Location "centralindia" -VMSize "Standard_D64pls_v6" -VMName "arm-vm"
+
+# Use LTS Ubuntu (24.04) for production workloads
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -UseLTS
+
+# Prefer full server image over minimal
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -PreferServer
 ```
 
 **Convert dynamic IPs to static (PowerShell 7.5+):**
