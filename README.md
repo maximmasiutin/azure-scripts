@@ -133,7 +133,8 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 - Required packages: `curl_cffi`, `tabulate`, `azure-storage-blob`, `azure-data-tables`, `Pillow`
 
 **PowerShell Requirements:**
-- Azure PowerShell module
+- PowerShell 7.5 or later (run scripts with `pwsh`)
+- Azure PowerShell module (Az)
 - Appropriate Azure subscription permissions
 
 **Bash Requirements:**
@@ -185,6 +186,17 @@ python monitor-stddev.py --url "https://example.com" \
 sudo ./azure-swap.bash
 # Verify service is running
 sudo systemctl status robust-swap-setup.service
+```
+
+**Create Azure spot VMs (PowerShell 7.5+):**
+```powershell
+# Run with pwsh (PowerShell 7.5+)
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm"
+```
+
+**Convert dynamic IPs to static (PowerShell 7.5+):**
+```powershell
+pwsh ./change-ip-to-static.ps1 -Force
 ```
 
 ## Advanced Features
