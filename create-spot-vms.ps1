@@ -263,6 +263,7 @@ function Test-SpotQuota {
                     Success = $true
                     Available = $available
                     Required = $coreCount
+                    Limit = $spotQuota.Limit
                     Family = "Total Regional Spot vCPUs"
                 }
             } else {
@@ -270,6 +271,7 @@ function Test-SpotQuota {
                     Success = $false
                     Available = $available
                     Required = $coreCount
+                    Limit = $spotQuota.Limit
                     Family = "Total Regional Spot vCPUs"
                     Message = "Insufficient SPOT quota: need $coreCount cores, only $available available"
                 }
@@ -315,8 +317,15 @@ function Show-QuotaIncreaseInstructions {
     param(
         [string]$Location,
         [string]$Family,
-        [int]$RequiredCores
+        [int]$RequiredCores,
+        [int]$QuotaLimit = 0
     )
+
+    # Skip if quota limit is already at max (Azure requires wire transfer for >200)
+    if ($QuotaLimit -ge 200) {
+        Write-Log "Quota limit is $QuotaLimit (max for credit card billing) - skipping increase suggestion" "DEBUG"
+        return
+    }
 
     Write-Log "============================================" "WARN"
     Write-Log "QUOTA INCREASE REQUIRED" "WARN"
@@ -367,8 +376,8 @@ if (-not $SkipQuotaCheck) {
         if ($quotaResult.UnsupportedRegion) {
             Write-Log "Region $Location does not support quota API, will try VM creation anyway" "WARN"
         } elseif (-not $Force) {
-            Show-QuotaIncreaseInstructions -Location $Location -Family $quotaResult.Family -RequiredCores $totalCores
-            
+            Show-QuotaIncreaseInstructions -Location $Location -Family $quotaResult.Family -RequiredCores $totalCores -QuotaLimit $quotaResult.Limit
+
             if ($RequestQuota) {
                 Write-Log "RequestQuota switch is ON. Attempting automatic quota request..." "INFO"
                 $family = Get-VMFamilyName -VMSize $VMSize
@@ -401,6 +410,38 @@ if (-not $SkipQuotaCheck) {
 Write-Log "Checking resource group..."
 $rg = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
 
+if ($rg) {
+    # Check if existing resource group is in the correct region
+    $rgLocation = $rg.Location.ToLower() -replace '\s', ''
+    $targetLocation = $Location.ToLower() -replace '\s', ''
+    if ($rgLocation -ne $targetLocation) {
+        Write-Log "Resource group exists in $($rg.Location) but target is $Location - deleting..." "WARN"
+        try {
+            Remove-AzResourceGroup -Name $ResourceGroupName -Force -ErrorAction Stop
+            Write-Log "Deleted resource group, waiting for deletion to complete..."
+            # Wait for deletion to propagate
+            $deleteWait = 0
+            $maxDeleteWait = 60
+            while ($deleteWait -lt $maxDeleteWait) {
+                Start-Sleep -Seconds 5
+                $deleteWait += 5
+                $checkRg = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
+                if (-not $checkRg) {
+                    Write-Log "Resource group deletion confirmed"
+                    break
+                }
+                Write-Log "Waiting for resource group deletion... ($deleteWait/$maxDeleteWait sec)" "DEBUG"
+            }
+            $rg = $null
+        } catch {
+            Write-Log "Error deleting resource group: $($_.Exception.Message)" "ERROR"
+            return @{ Success = $false; Error = "Failed to delete Resource Group in wrong region: $($_.Exception.Message)" }
+        }
+    } else {
+        Write-Log "Using existing resource group: $ResourceGroupName"
+    }
+}
+
 if (-not $rg) {
     Write-Log "Creating resource group: $ResourceGroupName in $Location"
     try {
@@ -413,14 +454,12 @@ if (-not $rg) {
         $rg = New-AzResourceGroup @rgParams
         # Wait for resource group to fully propagate in Azure
         Write-Log "Waiting for resource group to propagate..."
-        Start-Sleep -Seconds 10
+        Start-Sleep -Seconds 20
     }
     catch {
         Write-Log "Error creating resource group '$ResourceGroupName': $($_.Exception.Message)" "ERROR"
         return @{ Success = $false; Error = "Failed to create Resource Group: $($_.Exception.Message)" }
     }
-} else {
-    Write-Log "Using existing resource group: $ResourceGroupName"
 }
 
     # ==== VIRTUAL NETWORK ====
@@ -431,7 +470,7 @@ if (-not $rg) {
         Write-Log "Creating virtual network: $NetworkName"
         $vnetCreated = $false
         $vnetAttempt = 0
-        $maxVnetAttempts = 5
+        $maxVnetAttempts = 12
         while (-not $vnetCreated -and $vnetAttempt -lt $maxVnetAttempts) {
             $vnetAttempt++
             try {
@@ -466,7 +505,7 @@ if (-not $rg) {
                 # ResourceNotFound means resource group not fully propagated yet
                 if ($errorMsg -match "ResourceNotFound|was not found") {
                     if ($vnetAttempt -lt $maxVnetAttempts) {
-                        $waitSecs = $vnetAttempt * 10
+                        $waitSecs = 15
                         Write-Log "Resource group not ready (attempt $vnetAttempt/$maxVnetAttempts), waiting ${waitSecs}s..." "WARN"
                         Start-Sleep -Seconds $waitSecs
                     } else {
@@ -795,8 +834,9 @@ foreach ($vmN in $vmNames) {
             $resultEntry.QuotaError = $true
             $familyInfo = Get-VMFamilyName -VMSize $VMSize
             $resultEntry.Family = $familyInfo
-            Show-QuotaIncreaseInstructions -Location $Location -Family $familyInfo -RequiredCores (Get-VMCoreCount -VMSize $VMSize)
-            
+            # Pass 200 as default limit - quota increase not possible without wire transfer
+            Show-QuotaIncreaseInstructions -Location $Location -Family $familyInfo -RequiredCores (Get-VMCoreCount -VMSize $VMSize) -QuotaLimit 200
+
             if ($RequestQuota) {
                 Write-Log "RequestQuota switch is ON. Attempting automatic quota request..." "INFO"
                 if ($familyInfo) {
