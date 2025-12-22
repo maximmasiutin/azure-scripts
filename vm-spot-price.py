@@ -83,14 +83,28 @@ def create_resilient_session():
 
 
 @rate_limit(calls_per_second=2)
-def fetch_pricing_data(api_url: str, params: Dict[str, str], session: Session) -> Dict[str, Any]:
+def fetch_pricing_data(api_url: str, params: Dict[str, str], session: Session, verbose: bool = False) -> Dict[str, Any]:
     """Fetch pricing data with error handling and rate limiting."""
     try:
+        if verbose:
+            print(f"[VERBOSE] API URL: {api_url}", file=stderr)
+            if params:
+                print(f"[VERBOSE] Query params: {params}", file=stderr)
+
         response: Response = session.get(api_url, params=params, timeout=30)
+
+        if verbose:
+            print(f"[VERBOSE] HTTP Status: {response.status_code} {response.reason}", file=stderr)
+
         response.raise_for_status()
 
         try:
-            return response.json()
+            data = response.json()
+            if verbose:
+                items_count = len(data.get("Items", []))
+                next_page = "Yes" if data.get("NextPageLink") else "No"
+                print(f"[VERBOSE] Response: {items_count} items, NextPage: {next_page}", file=stderr)
+            return data
         except JSONDecodeError as e:
             print(f"Error: Invalid JSON response from API: {e}", file=stderr)
             raise
@@ -469,6 +483,8 @@ def main() -> None:
     parser.add_argument('--general-compute', action='store_true', help='Only D and F series (general purpose + compute optimized)')
     parser.add_argument('--latest', action='store_true', help='Only latest gen (v6/v7): AMD Genoa/Turin, ARM Cobalt - fastest query')
     parser.add_argument('--series', type=str, help='Comma-separated list of VM series to search (e.g., Dasv6,Fasv7)')
+    parser.add_argument('--region', type=str, help='Filter results to specific region(s), comma-separated (e.g., eastus,westus2)')
+    parser.add_argument('--verbose', action='store_true', help='Print verbose debug info (API URL, query, HTTP status, raw data)')
 
     args: Namespace = parser.parse_args()
 
@@ -595,11 +611,19 @@ def main() -> None:
                 query += f" and productName eq 'Virtual Machines {series} Series'"
                 if not non_spot:
                     query += " and contains(meterName, 'Spot')"
+                # Add region filter if specified
+                if args.region:
+                    regions = [r.strip() for r in args.region.split(',') if r.strip()]
+                    if len(regions) == 1:
+                        query += f" and armRegionName eq '{regions[0]}'"
+                    elif len(regions) > 1:
+                        region_filter = ' or '.join([f"armRegionName eq '{r}'" for r in regions])
+                        query += f" and ({region_filter})"
 
                 logging.debug(f"Query: {query}")
 
                 try:
-                    json_data = fetch_pricing_data(api_url, {"$filter": query}, session)
+                    json_data = fetch_pricing_data(api_url, {"$filter": query}, session, verbose=args.verbose)
                 except Exception as e:
                     logging.debug(f"No data for {series}: {e}")
                     continue
@@ -610,7 +634,7 @@ def main() -> None:
 
                 while next_page and page_count < max_pages:
                     try:
-                        json_data = fetch_pricing_data(next_page, {}, session)
+                        json_data = fetch_pricing_data(next_page, {}, session, verbose=args.verbose)
                         items.extend(json_data.get("Items", []))
                         next_page = json_data.get("NextPageLink", "")
                         page_count += 1
@@ -738,6 +762,15 @@ def main() -> None:
             if not non_spot:
                 query += " and contains(meterName, 'Spot')"
 
+            # Add region filter if specified
+            if args.region:
+                regions = [r.strip() for r in args.region.split(',') if r.strip()]
+                if len(regions) == 1:
+                    query += f" and armRegionName eq '{regions[0]}'"
+                elif len(regions) > 1:
+                    region_filter = ' or '.join([f"armRegionName eq '{r}'" for r in regions])
+                    query += f" and ({region_filter})"
+
             if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
                 windows_suffix = ""
                 if DEFAULT_SEARCH_VMWINDOWS:
@@ -751,7 +784,7 @@ def main() -> None:
             logging.debug(f"Query: {query}")
 
             # Initial request
-            json_data = fetch_pricing_data(api_url, {"$filter": query}, session)
+            json_data = fetch_pricing_data(api_url, {"$filter": query}, session, verbose=args.verbose)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
 
             next_page: str = json_data.get("NextPageLink", "")
@@ -761,7 +794,7 @@ def main() -> None:
             while next_page and page_count < max_pages:
                 if not return_region:
                     print_progress(page_count, min(page_count + 10, max_pages), "Fetching pages")
-                json_data = fetch_pricing_data(next_page, {}, session)
+                json_data = fetch_pricing_data(next_page, {}, session, verbose=args.verbose)
                 next_page = json_data.get("NextPageLink", "")
                 build_pricing_table(json_data, table_data, non_spot, low_priority)
                 page_count += 1
