@@ -147,6 +147,11 @@ def build_pricing_table(json_data: Dict[str, Any], table_data: List[List[Any]], 
             if not low_priority and "Low Priority" in meter_name:
                 continue
 
+            # Client-side Windows filtering (for ARM VMs that skip productName API filter)
+            if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
+                if "Windows" in product_name:
+                    continue
+
             table_data.append([
                 arm_sku_name,
                 retail_price,
@@ -252,6 +257,35 @@ def is_burstable_vm(sku_name: str) -> bool:
     return sku_name.upper().startswith('B')
 
 
+def is_arm_vm(sku_name: str) -> bool:
+    """Check if VM is ARM-based (has 'p' in size designator indicating ARM processor).
+
+    Azure ARM VM naming convention: The 'p' suffix indicates Arm-based processors.
+    Examples:
+        Standard_D4ps_v5 -> True (ARM Ampere Altra)
+        Standard_D4pls_v5 -> True (ARM Ampere Altra, low memory)
+        Standard_D4s_v5 -> False (Intel)
+        Standard_D4as_v5 -> False (AMD)
+        Dpsv5 -> True (series name)
+        Dplsv6 -> True (series name)
+    """
+    import re
+    # Remove Standard_ prefix if present
+    sku_name = sku_name.replace("Standard_", "")
+    # ARM VMs have 'p' after the first letter(s) and before 's' or 'l'
+    # Pattern: letter(s) + digits + 'p' + optional 'l/d' + 's'
+    # Or for series names: letter(s) + 'p' + optional letters + 'v' + digit
+    arm_patterns = [
+        r'^[A-Za-z]+\d*p[lds]*_v\d+$',   # SKU: D4ps_v5, D4pls_v5, D4pds_v5
+        r'^[A-Za-z]+p[lds]*v\d+$',        # Series: Dpsv5, Dplsv5, Dpdsv6
+        r'^[BE]p[lds]*v\d+$',              # Series: Epsv5, Bpsv2
+    ]
+    for pattern in arm_patterns:
+        if re.match(pattern, sku_name, re.IGNORECASE):
+            return True
+    return False
+
+
 # Comprehensive list of Azure VM series for per-core search
 # Based on official Azure documentation as of 2024-2025
 
@@ -350,31 +384,73 @@ VM_SERIES_GENERAL_PURPOSE = (
     VM_SERIES_D_ARM_V6
 )
 
-# Latest generation only (v6/v7) - for fast queries
-VM_SERIES_LATEST = (
-    # F-series latest
-    VM_SERIES_F_AMD_V6 +
-    VM_SERIES_F_AMD_V7 +
-    # D-series latest
-    VM_SERIES_D_AMD_V6 +
-    VM_SERIES_D_AMD_V7 +
-    VM_SERIES_D_ARM_V6
-)
-
 # General compute = D + F series (non-exotic)
 VM_SERIES_GENERAL_COMPUTE = VM_SERIES_GENERAL_PURPOSE + VM_SERIES_COMPUTE_OPTIMIZED
 
-# Memory optimized (E-family) - for completeness
-VM_SERIES_MEMORY_OPTIMIZED = [
-    "Ev5", "Esv5", "Edsv5", "Ebsv5", "Ebdsv5",
-    "Easv5", "Eadsv5",
-    "Epsv5", "Epdsv5",
-    "Easv6", "Eadsv6",
-    "Epsv6", "Epdsv6",
+# =============================================================================
+# MEMORY OPTIMIZED (E-family) - High memory-to-CPU ratio
+# =============================================================================
+
+# Intel v5 (Xeon Platinum 8370C Ice Lake)
+VM_SERIES_E_INTEL_V5 = [
+    "Ev5", "Esv5",           # 104 vCPUs, 672 GiB, no local disk
+    "Edv5", "Edsv5",         # 104 vCPUs, 672 GiB, with local disk
+    "Ebsv5", "Ebdsv5",       # 104 vCPUs, with bandwidth optimized storage
 ]
+
+# AMD v5 (EPYC 7763v Milan)
+VM_SERIES_E_AMD_V5 = [
+    "Easv5", "Eadsv5",       # 96 vCPUs, 672 GiB
+]
+
+# AMD v6 (EPYC 9004 Genoa @ 3.7 GHz)
+VM_SERIES_E_AMD_V6 = [
+    "Easv6", "Eadsv6",       # 96 vCPUs, 672 GiB
+]
+
+# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - Preview
+VM_SERIES_E_AMD_V7 = [
+    "Easv7", "Eadsv7",       # 160 vCPUs, 1024 GiB (8:1)
+    "Ealsv7", "Ealdsv7",     # 160 vCPUs, 512 GiB (4:1, low memory)
+]
+
+# ARM v5 (Ampere Altra)
+VM_SERIES_E_ARM_V5 = [
+    "Epsv5", "Epdsv5",       # 64 vCPUs, 208 GiB
+]
+
+# ARM v6 (Azure Cobalt 100 @ 3.4 GHz)
+VM_SERIES_E_ARM_V6 = [
+    "Epsv6", "Epdsv6",       # 96 vCPUs, 384 GiB
+]
+
+# All Memory Optimized
+VM_SERIES_MEMORY_OPTIMIZED = (
+    VM_SERIES_E_INTEL_V5 +
+    VM_SERIES_E_AMD_V5 +
+    VM_SERIES_E_AMD_V6 +
+    VM_SERIES_E_AMD_V7 +
+    VM_SERIES_E_ARM_V5 +
+    VM_SERIES_E_ARM_V6
+)
 
 # All non-burstable series
 VM_SERIES_NON_BURSTABLE = VM_SERIES_GENERAL_COMPUTE + VM_SERIES_MEMORY_OPTIMIZED
+
+# Latest generation only (v6/v7) - for fast queries
+VM_SERIES_LATEST = (
+    # D-series latest (AMD v6/v7 + ARM v6)
+    VM_SERIES_D_AMD_V6 +
+    VM_SERIES_D_AMD_V7 +
+    VM_SERIES_D_ARM_V6 +
+    # F-series latest (AMD v6/v7)
+    VM_SERIES_F_AMD_V6 +
+    VM_SERIES_F_AMD_V7 +
+    # E-series latest (AMD v6/v7 + ARM v6)
+    VM_SERIES_E_AMD_V6 +
+    VM_SERIES_E_AMD_V7 +
+    VM_SERIES_E_ARM_V6
+)
 
 # All series
 VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE
@@ -415,6 +491,10 @@ def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[
         if args.burstable_only and not is_burstable:
             return
         if args.no_burstable and is_burstable:
+            return
+
+        # Filter ARM VMs if --exclude-arm is set
+        if getattr(args, 'exclude_arm', False) and is_arm_vm(arm_sku_name):
             return
 
         # Filter for general-compute: only D and F series (non-burstable)
@@ -485,6 +565,8 @@ def main() -> None:
     parser.add_argument('--series', type=str, help='Comma-separated list of VM series to search (e.g., Dasv6,Fasv7)')
     parser.add_argument('--region', type=str, help='Filter results to specific region(s), comma-separated (e.g., eastus,westus2)')
     parser.add_argument('--verbose', action='store_true', help='Print verbose debug info (API URL, query, HTTP status, raw data)')
+    parser.add_argument('--exclude-arm', action='store_true', help='Exclude ARM-based VMs (those with p suffix like D4ps_v5)')
+    parser.add_argument('--return-region-json', action='store_true', help='Return single region output in JSON format (for PowerShell parsing)')
 
     args: Namespace = parser.parse_args()
 
@@ -500,7 +582,7 @@ def main() -> None:
 
     non_spot: bool = args.non_spot
     low_priority: bool = args.low_priority
-    return_region: bool = args.return_region
+    return_region: bool = args.return_region or args.return_region_json
 
     # Validate per-core pricing arguments
     per_core_mode: bool = args.min_cores is not None or args.max_cores is not None
@@ -571,7 +653,7 @@ def main() -> None:
             exit(1)
         logging.getLogger().setLevel(getattr(logging, normalized_level))
     else:
-        if args.return_region:
+        if return_region:
             logging.getLogger().setLevel(logging.ERROR)
         else:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -596,7 +678,7 @@ def main() -> None:
         elif args.no_burstable:
             series_list = list(VM_SERIES_NON_BURSTABLE)
         else:
-            series_list = list(VM_SERIES_GENERAL_COMPUTE)  # Default to general compute
+            series_list = list(VM_SERIES_NON_BURSTABLE)  # Default to all non-burstable (D, F, E series)
 
         try:
             if not return_region:
@@ -669,7 +751,17 @@ def main() -> None:
             vm_size = best[0]
             price = best[1]
             unit = best[4]
-            print(f"{region} {vm_size} {price} {unit}")
+            if args.return_region_json:
+                # JSON format for PowerShell parsing
+                result = {
+                    "region": region,
+                    "vmSize": vm_size,
+                    "price": price,
+                    "unit": unit
+                }
+                print(json.dumps(result))
+            else:
+                print(f"{region} {vm_size} {price} {unit}")
         else:
             print(f"\nFound {len(per_core_data)} VM options in {args.min_cores}-{args.max_cores} vCPU range")
             print(f"Top 20 cheapest per-core options:\n")
@@ -738,7 +830,12 @@ def main() -> None:
                 if not DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
                     logging.error("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
                     exit(1)
-                query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                # Skip productName filter for ARM VMs - they have different naming in Azure API
+                # ARM VMs will be filtered client-side for Windows exclusion
+                if not is_arm_vm(sku) and not is_arm_vm(series):
+                    query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                else:
+                    logging.debug(f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)")
             print(f"SKU: {sku}, Series: {series}")
             print(f"Filter: {query}")
             print()
@@ -779,7 +876,12 @@ def main() -> None:
                     if not DEFAULT_SEARCH_VMLINUX:
                         logging.error("Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False")
                         exit(1)
-                query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                # Skip productName filter for ARM VMs - they have different naming in Azure API
+                # ARM VMs will be filtered client-side for Windows exclusion
+                if not is_arm_vm(sku) and not is_arm_vm(series):
+                    query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                else:
+                    logging.debug(f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)")
 
             logging.debug(f"Query: {query}")
 
@@ -825,6 +927,14 @@ def main() -> None:
         if filtered_count > 0:
             logging.debug(f"Filtered out {filtered_count} entries from excluded regions")
 
+    # Filter out ARM VMs if --exclude-arm is set
+    if args.exclude_arm:
+        original_count = len(table_data)
+        table_data = [row for row in table_data if not is_arm_vm(row[0])]
+        filtered_count = original_count - len(table_data)
+        if filtered_count > 0:
+            logging.debug(f"Filtered out {filtered_count} ARM VM entries")
+
     # Output results
     if return_region:
         if table_data:
@@ -832,9 +942,19 @@ def main() -> None:
             vm_size: str = table_data[0][0]  # SKU e.g., Standard_D4pls_v5
             price: float = table_data[0][1]
             unit: str = table_data[0][2]
-            # Output format: region vmsize price unit (space-separated)
-            # Usage in PowerShell: $region, $vmSize, $price, $unit = (python vm-spot-price.py ...) -split ' ', 4
-            print(f"{region} {vm_size} {price} {unit}")
+            if args.return_region_json:
+                # JSON format for PowerShell parsing
+                result = {
+                    "region": region,
+                    "vmSize": vm_size,
+                    "price": price,
+                    "unit": unit
+                }
+                print(json.dumps(result))
+            else:
+                # Output format: region vmsize price unit (space-separated)
+                # Usage in PowerShell: $region, $vmSize, $price, $unit = (python vm-spot-price.py ...) -split ' ', 4
+                print(f"{region} {vm_size} {price} {unit}")
         else:
             logging.error("No region found")
             exit(1)

@@ -1,6 +1,20 @@
 # create-spot-vms.ps1
-# Creates Azure VM spot instances (single or batch)
+# Creates Azure Spot VMs with full ARM64 and latest Ubuntu support
 # Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+#
+# Features:
+#   - Full ARM64 support: ARM VMs (D*p*_v5, D*p*_v6) auto-detected
+#   - Latest Ubuntu minimal: Auto-selects newest Ubuntu (25.10) with minimal image
+#   - Architecture detection: Automatically uses ARM64 or x64 image based on VM size
+#   - Spot pricing: Creates cost-effective spot instances with eviction handling
+#
+# Switches:
+#   -UseLTS        Use LTS Ubuntu (24.04) instead of latest (25.10)
+#   -PreferServer  Use full server image instead of minimal
+#
+# Examples:
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName myvm
+#   pwsh create-spot-vms.ps1 -Location centralindia -VMSize Standard_D64pls_v6 -VMName arm-vm
 #
 # Requires: PowerShell 7.5 or later (run with pwsh)
 
@@ -25,13 +39,15 @@ param(
     [switch]$NoPublicIP,
     [switch]$UseNatGateway,
 
-    # Image
+    # Image - auto-detected based on CPU type if not specified
     [string]$ImagePublisher = "Canonical",
-    [string]$ImageOffer = "0001-com-ubuntu-server-jammy",
-    [string]$ImageSku = "22_04-lts-gen2",
+    [string]$ImageOffer,  # Auto-detected if not specified
+    [string]$ImageSku,    # Auto-detected if not specified
     [string]$ImageVersion = "latest",
     [string]$StorageAccountType = "Standard_LRS",
     [string]$SecurityType = "TrustedLaunch",
+    [switch]$UseLTS,      # Use LTS Ubuntu (24.04) instead of latest non-LTS (default: non-LTS)
+    [switch]$PreferServer,  # Prefer server over minimal image
 
     # Authentication
     [string]$AdminUsername = "azureuser",
@@ -84,20 +100,155 @@ function Write-Log {
     Write-Host "[$Level] $timestamp - $Message" -ForegroundColor $color
 }
 
+function Test-IsArmVM {
+    param([string]$VMSize)
+    # ARM VMs have 'p' in the size after the series letter(s) and core count
+    # Examples: D4ps_v5, D4pls_v6, D4pds_v5 (ARM Ampere Altra / Azure Cobalt 100)
+    # Non-ARM: D4as_v5, D4s_v5, F4s_v2 (AMD/Intel)
+    $size = $VMSize -replace "^Standard_", ""
+    # Pattern: letter(s) + digits + 'p' + optional 'l/d' + 's' + '_v' + digit
+    return $size -match "^[A-Za-z]+\d+p[lds]*_v\d+$"
+}
+
+function Get-LatestUbuntuImage {
+    param(
+        [string]$Location,
+        [bool]$IsArm,
+        [bool]$UseLTS = $false,
+        [bool]$PreferServer = $false
+    )
+
+    # Ubuntu image offers in order of preference (newest first)
+    # Non-LTS versions (default for spot VMs - latest features, stability less critical)
+    $nonLtsOffers = @("ubuntu-25_10", "ubuntu-25_04", "ubuntu-24_10")
+    # LTS versions (use with -UseLTS for production workloads)
+    $ltsOffers = @("ubuntu-24_04-lts", "ubuntu-22_04-lts")
+
+    # Default: prefer non-LTS (newest), fall back to LTS
+    $offers = if ($UseLTS) { $ltsOffers + $nonLtsOffers } else { $nonLtsOffers + $ltsOffers }
+
+    # SKU preferences based on architecture
+    if ($IsArm) {
+        $skuOrder = if ($PreferServer) {
+            @("server-arm64", "minimal-arm64")
+        } else {
+            @("minimal-arm64", "server-arm64")
+        }
+    } else {
+        # For x64, prefer gen2 (UEFI) over gen1 (BIOS)
+        $skuOrder = if ($PreferServer) {
+            @("server", "server-gen1", "minimal", "minimal-gen1")
+        } else {
+            @("minimal", "minimal-gen1", "server", "server-gen1")
+        }
+    }
+
+    foreach ($offer in $offers) {
+        try {
+            $availableSkus = az vm image list-skus --publisher Canonical --offer $offer --location $Location --output json 2>$null | ConvertFrom-Json
+            if ($availableSkus -and $availableSkus.Count -gt 0) {
+                $skuNames = $availableSkus | ForEach-Object { $_.name }
+                foreach ($sku in $skuOrder) {
+                    if ($sku -in $skuNames) {
+                        Write-Log "Found Ubuntu image: $offer / $sku" "SUCCESS"
+                        return @{
+                            Offer = $offer
+                            Sku = $sku
+                            IsMinimal = $sku -like "*minimal*"
+                        }
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Could not query SKUs for $offer in $Location : $_" "DEBUG"
+        }
+    }
+
+    # Fallback to old naming convention (Ubuntu 22.04)
+    Write-Log "Falling back to Ubuntu 22.04 (old naming convention)" "WARN"
+    if ($IsArm) {
+        return @{
+            Offer = "0001-com-ubuntu-server-jammy"
+            Sku = "22_04-lts-arm64"
+            IsMinimal = $false
+        }
+    } else {
+        return @{
+            Offer = "0001-com-ubuntu-server-jammy"
+            Sku = "22_04-lts-gen2"
+            IsMinimal = $false
+        }
+    }
+}
+
 function Get-VMFamilyName {
     param([string]$VMSize)
     # Extract short family name for quota API (e.g., D4pls_v5 -> DPLSv5)
     $size = $VMSize -replace "^Standard_", ""
-    # Map patterns to family names
-    $patterns = @{
-        "D.*pls_v5$" = "DPLSv5"
-        "D.*ps_v5$"  = "DPSv5"
-        "D.*pds_v5$" = "DPDSv5"
-        "D.*as_v5$"  = "DASv5"
-        "D.*ads_v5$" = "DADSv5"
-        "D.*s_v5$"   = "DSv5"
-        "F.*s_v2$"   = "FSv2"
-        "B.*s_v2$"   = "BSv2"
+    # Map patterns to family names (order matters - more specific patterns first)
+    # See: https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
+    $patterns = [ordered]@{
+        # ARM D-series v6 (Cobalt 100)
+        "D.*plds_v6$" = "DPLDSv6"
+        "D.*pls_v6$"  = "DPLSv6"
+        "D.*pds_v6$"  = "DPDSv6"
+        "D.*ps_v6$"   = "DPSv6"
+        # ARM D-series v5 (Ampere Altra)
+        "D.*plds_v5$" = "DPLDSv5"
+        "D.*pls_v5$"  = "DPLSv5"
+        "D.*pds_v5$"  = "DPDSv5"
+        "D.*ps_v5$"   = "DPSv5"
+        # AMD D-series v7 (Turin)
+        "D.*alds_v7$" = "DALDSv7"
+        "D.*als_v7$"  = "DALSv7"
+        "D.*ads_v7$"  = "DADSv7"
+        "D.*as_v7$"   = "DASv7"
+        # AMD D-series v6 (Genoa)
+        "D.*alds_v6$" = "DALDSv6"
+        "D.*als_v6$"  = "DALSv6"
+        "D.*ads_v6$"  = "DADSv6"
+        "D.*as_v6$"   = "DASv6"
+        # AMD D-series v5 (Milan)
+        "D.*ads_v5$"  = "DADSv5"
+        "D.*as_v5$"   = "DASv5"
+        # Intel D-series v5 (Ice Lake)
+        "D.*lds_v5$"  = "DLDSv5"
+        "D.*ls_v5$"   = "DLSv5"
+        "D.*ds_v5$"   = "DDSv5"
+        "D.*s_v5$"    = "DSv5"
+        "D.*d_v5$"    = "DDv5"
+        "D.*_v5$"     = "Dv5"
+        # AMD F-series v7 (Turin)
+        "F.*amds_v7$" = "FAMDSv7"
+        "F.*ams_v7$"  = "FAMSv7"
+        "F.*alds_v7$" = "FALDSv7"
+        "F.*als_v7$"  = "FALSv7"
+        "F.*ads_v7$"  = "FADSv7"
+        "F.*as_v7$"   = "FASv7"
+        # AMD F-series v6 (Genoa)
+        "F.*amds_v6$" = "FAMDSv6"
+        "F.*ams_v6$"  = "FAMSv6"
+        "F.*alds_v6$" = "FALDSv6"
+        "F.*als_v6$"  = "FALSv6"
+        "F.*ads_v6$"  = "FADSv6"
+        "F.*as_v6$"   = "FASv6"
+        # Intel F-series v2
+        "F.*s_v2$"    = "FSv2"
+        # ARM B-series v2
+        "B.*pls_v2$"  = "BPLSv2"
+        "B.*ps_v2$"   = "BPSv2"
+        # Intel B-series v2
+        "B.*ls_v2$"   = "BLSv2"
+        "B.*s_v2$"    = "BSv2"
+        # ARM E-series v5
+        "E.*pds_v5$"  = "EPDSv5"
+        "E.*ps_v5$"   = "EPSv5"
+        # AMD E-series v5
+        "E.*ads_v5$"  = "EADSv5"
+        "E.*as_v5$"   = "EASv5"
+        # Intel E-series v5
+        "E.*ds_v5$"   = "EDSv5"
+        "E.*s_v5$"    = "ESv5"
     }
     foreach ($pattern in $patterns.Keys) {
         if ($size -match $pattern) {
@@ -733,7 +884,28 @@ foreach ($vmN in $vmNames) {
             $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
         }
 
-        $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $ImagePublisher -Offer $ImageOffer -Skus $ImageSku -Version $ImageVersion
+        # Auto-detect Ubuntu image based on VM type (ARM vs x64) and user preferences
+        $actualImageOffer = $ImageOffer
+        $actualImageSku = $ImageSku
+        $isArm = Test-IsArmVM -VMSize $VMSize
+
+        if (-not $ImageOffer -or -not $ImageSku) {
+            # Auto-detect best Ubuntu image for this VM type and location
+            Write-Log "Auto-detecting Ubuntu image for $VMSize in $Location..."
+            $imageInfo = Get-LatestUbuntuImage -Location $Location -IsArm $isArm -UseLTS $UseLTS -PreferServer $PreferServer
+            $actualImageOffer = $imageInfo.Offer
+            $actualImageSku = $imageInfo.Sku
+            Write-Log "Using Ubuntu: $actualImageOffer / $actualImageSku (minimal: $($imageInfo.IsMinimal))" "INFO"
+        } elseif ($isArm -and $actualImageSku -notlike "*arm64*") {
+            # User specified image but it is not ARM64 - warn and try to fix
+            Write-Log "ARM VM detected but non-ARM64 SKU specified: $actualImageSku" "WARN"
+            if ($actualImageSku -eq "22_04-lts-gen2") {
+                $actualImageSku = "22_04-lts-arm64"
+                Write-Log "Auto-corrected SKU to: $actualImageSku" "INFO"
+            }
+        }
+
+        $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $ImagePublisher -Offer $actualImageOffer -Skus $actualImageSku -Version $ImageVersion
         $vmConfig = Add-AzVMNetworkInterface -VM $vmConfig -Id $nic.Id -DeleteOption "Delete"
             $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
             $vmConfig = Set-AzVMBootDiagnostic -VM $vmConfig -Enable
@@ -815,6 +987,8 @@ foreach ($vmN in $vmNames) {
             PublicIP = $publicIp
             Location = $Location
             VMSize = $VMSize
+            ImageOffer = $actualImageOffer
+            ImageSku = $actualImageSku
             AdminPassword = $generatedPassword
         }
     } catch {
