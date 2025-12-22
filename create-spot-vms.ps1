@@ -429,37 +429,57 @@ if (-not $rg) {
 
     if (-not $vnet) {
         Write-Log "Creating virtual network: $NetworkName"
-        try {
-            $subnetConfig = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetAddressPrefix
-            $vnetParams = @{
-                Name = $NetworkName
-                ResourceGroupName = $ResourceGroupName
-                Location = $Location
-                AddressPrefix = $VnetAddressPrefix
-                Subnet = $subnetConfig
-                ErrorAction = "Stop"
-            }
-            if ($ForceOverwrite) { $vnetParams.Force = $true }
-            $vnet = New-AzVirtualNetwork @vnetParams
-            # Wait for VNet to fully propagate
-            Write-Log "Waiting for VNet to propagate..."
-            Start-Sleep -Seconds 5
-        }    catch {
-        $errorMsg = $_.Exception.Message
-        Write-Log "Error creating virtual network: $errorMsg" "ERROR"
+        $vnetCreated = $false
+        $vnetAttempt = 0
+        $maxVnetAttempts = 5
+        while (-not $vnetCreated -and $vnetAttempt -lt $maxVnetAttempts) {
+            $vnetAttempt++
+            try {
+                $subnetConfig = New-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix $SubnetAddressPrefix
+                $vnetParams = @{
+                    Name = $NetworkName
+                    ResourceGroupName = $ResourceGroupName
+                    Location = $Location
+                    AddressPrefix = $VnetAddressPrefix
+                    Subnet = $subnetConfig
+                    ErrorAction = "Stop"
+                }
+                if ($ForceOverwrite) { $vnetParams.Force = $true }
+                $vnet = New-AzVirtualNetwork @vnetParams
+                $vnetCreated = $true
+                # Wait for VNet to fully propagate
+                Write-Log "Waiting for VNet to propagate..."
+                Start-Sleep -Seconds 5
+            } catch {
+                $errorMsg = $_.Exception.Message
 
-        if ($errorMsg -match "LocationNotAvailableForResourceType|not available for resource type") {
-            Write-Log "Region $Location does not support virtual networks - restricted region" "ERROR"
-            return @{
-                Success = $false
-                UnsupportedRegion = $true
-                Error = "Region $Location does not support virtual networks"
-                Location = $Location
+                if ($errorMsg -match "LocationNotAvailableForResourceType|not available for resource type") {
+                    Write-Log "Region $Location does not support virtual networks - restricted region" "ERROR"
+                    return @{
+                        Success = $false
+                        UnsupportedRegion = $true
+                        Error = "Region $Location does not support virtual networks"
+                        Location = $Location
+                    }
+                }
+
+                # ResourceNotFound means resource group not fully propagated yet
+                if ($errorMsg -match "ResourceNotFound|was not found") {
+                    if ($vnetAttempt -lt $maxVnetAttempts) {
+                        $waitSecs = $vnetAttempt * 10
+                        Write-Log "Resource group not ready (attempt $vnetAttempt/$maxVnetAttempts), waiting ${waitSecs}s..." "WARN"
+                        Start-Sleep -Seconds $waitSecs
+                    } else {
+                        Write-Log "Error creating virtual network after $maxVnetAttempts attempts: $errorMsg" "ERROR"
+                        throw
+                    }
+                } else {
+                    Write-Log "Error creating virtual network: $errorMsg" "ERROR"
+                    throw
+                }
             }
         }
-        throw
-    }
-} else {
+    } else {
     Write-Log "Using existing virtual network: $NetworkName"
 }
 
