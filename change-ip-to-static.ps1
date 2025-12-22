@@ -2,6 +2,8 @@
 # Change all public IP addresses from Dynamic to Static
 # Copyright 2025 by Maxim Masiutin. All rights reserved.
 #
+# Requires: PowerShell 7.5 or later (run with pwsh)
+#
 # SECURITY IMPROVEMENTS:
 # - Added comprehensive error handling and validation
 # - Implemented proper credential verification
@@ -28,6 +30,16 @@ param(
     [Parameter(HelpMessage="Enable detailed logging")]
     [switch]$Verbose
 )
+
+# PowerShell version check
+if ($PSVersionTable.PSVersion.Major -lt 7 -or
+    ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 5)) {
+    Write-Host "ERROR: This script requires PowerShell 7.5 or later." -ForegroundColor Red
+    Write-Host "Current version: $($PSVersionTable.PSVersion)" -ForegroundColor Red
+    Write-Host "Please install PowerShell 7.5+ from https://github.com/PowerShell/PowerShell/releases" -ForegroundColor Yellow
+    Write-Host "Run this script with: pwsh $($MyInvocation.MyCommand.Path)" -ForegroundColor Yellow
+    exit 1
+}
 
 # Script metadata
 $script:ScriptName = "change-ip-to-static.ps1"

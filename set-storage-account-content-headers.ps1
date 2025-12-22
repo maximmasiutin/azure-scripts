@@ -1,3 +1,9 @@
+# set-storage-account-content-headers.ps1
+# Sets Azure static website files content headers (such as Content-Type or Cache-Control)
+# Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+#
+# Requires: PowerShell 7.5 or later (run with pwsh)
+
 param(
     [Parameter(Mandatory = $false, ParameterSetName = 'Key')]
     [string]$StorageAccountName,
@@ -20,6 +26,16 @@ param(
     [Parameter(Mandatory = $false)]
     [string]$ContentType
 )
+
+# PowerShell version check
+if ($PSVersionTable.PSVersion.Major -lt 7 -or
+    ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 5)) {
+    Write-Host "ERROR: This script requires PowerShell 7.5 or later." -ForegroundColor Red
+    Write-Host "Current version: $($PSVersionTable.PSVersion)" -ForegroundColor Red
+    Write-Host "Please install PowerShell 7.5+ from https://github.com/PowerShell/PowerShell/releases" -ForegroundColor Yellow
+    Write-Host "Run this script with: pwsh $($MyInvocation.MyCommand.Path)" -ForegroundColor Yellow
+    exit 1
+}
 
 if (-not $CacheControl -and -not $ContentType) {
     Write-Error "At least one header (CacheControl or ContentType) must be specified."
