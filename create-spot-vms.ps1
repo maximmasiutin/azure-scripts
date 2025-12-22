@@ -1,6 +1,8 @@
 # create-spot-vms.ps1
 # Creates Azure VM spot instances (single or batch)
 # Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+#
+# Requires: PowerShell 7.5 or later (run with pwsh)
 
 [CmdletBinding()]
 param(
@@ -50,8 +52,19 @@ param(
     [switch]$Force,
     [switch]$ForceOverwrite,  # Force resource overwrite without prompting
     [switch]$RequestQuota,  # Attempt to auto-request quota increase on failure
-    [switch]$BlockSSH       # If set, NSG will be created but SSH traffic blocked (default: allowed)
+    [switch]$BlockSSH,      # If set, NSG will be created but SSH traffic blocked (default: allowed)
+    [switch]$NoNSG          # If set, skip NSG creation entirely (use with RemoveSSH in init script)
 )
+
+# PowerShell version check
+if ($PSVersionTable.PSVersion.Major -lt 7 -or
+    ($PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 5)) {
+    Write-Host "ERROR: This script requires PowerShell 7.5 or later." -ForegroundColor Red
+    Write-Host "Current version: $($PSVersionTable.PSVersion)" -ForegroundColor Red
+    Write-Host "Please install PowerShell 7.5+ from https://github.com/PowerShell/PowerShell/releases" -ForegroundColor Yellow
+    Write-Host "Run this script with: pwsh $($MyInvocation.MyCommand.Path)" -ForegroundColor Yellow
+    exit 1
+}
 
 # Suppress Azure breaking change warnings to clean up logs
 $env:SuppressAzurePowerShellBreakingChangeWarnings = "true"
@@ -398,6 +411,9 @@ if (-not $rg) {
         }
         if ($ForceOverwrite) { $rgParams.Force = $true }
         $rg = New-AzResourceGroup @rgParams
+        # Wait for resource group to fully propagate in Azure
+        Write-Log "Waiting for resource group to propagate..."
+        Start-Sleep -Seconds 10
     }
     catch {
         Write-Log "Error creating resource group '$ResourceGroupName': $($_.Exception.Message)" "ERROR"
@@ -425,6 +441,9 @@ if (-not $rg) {
             }
             if ($ForceOverwrite) { $vnetParams.Force = $true }
             $vnet = New-AzVirtualNetwork @vnetParams
+            # Wait for VNet to fully propagate
+            Write-Log "Waiting for VNet to propagate..."
+            Start-Sleep -Seconds 5
         }    catch {
         $errorMsg = $_.Exception.Message
         Write-Log "Error creating virtual network: $errorMsg" "ERROR"
@@ -579,51 +598,73 @@ foreach ($vmN in $vmNames) {
              continue
         }
 
-        # Create NSG
-        $nsgName = "$vmN-nsg"
-        $nsg = Get-AzNetworkSecurityGroup -Name $nsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-        
-        if (-not $nsg) {
-            try {
-                $nsgParams = @{
-                    ResourceGroupName = $ResourceGroupName
-                    Location = $Location
-                    Name = $nsgName
-                    ErrorAction = "Stop"
-                }
-                if ($ForceOverwrite) { $nsgParams.Force = $true }
+        # Create NSG (unless -NoNSG is specified)
+        if (-not $NoNSG) {
+            $nsgName = "$vmN-nsg"
+            $nsg = Get-AzNetworkSecurityGroup -Name $nsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
 
-                if ($BlockSSH) {
-                    Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
-                    $nsg = New-AzNetworkSecurityGroup @nsgParams
-                } else {
-                    Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
-                    $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
-                        -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
-                        -SourceAddressPrefix Internet -SourcePortRange * `
-                        -DestinationAddressPrefix * -DestinationPortRange 22
-                    $nsg = New-AzNetworkSecurityGroup @nsgParams -SecurityRules $ruleSSH
+            if (-not $nsg) {
+                try {
+                    $nsgParams = @{
+                        ResourceGroupName = $ResourceGroupName
+                        Location = $Location
+                        Name = $nsgName
+                        ErrorAction = "Stop"
+                    }
+                    if ($ForceOverwrite) { $nsgParams.Force = $true }
+
+                    if ($BlockSSH) {
+                        Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
+                        $nsg = New-AzNetworkSecurityGroup @nsgParams
+                    } else {
+                        Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
+                        $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
+                            -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
+                            -SourceAddressPrefix Internet -SourcePortRange * `
+                            -DestinationAddressPrefix * -DestinationPortRange 22
+                        $nsg = New-AzNetworkSecurityGroup @nsgParams -SecurityRules $ruleSSH
+                    }
+                } catch {
+                     Write-Log "Error creating NSG '$nsgName': $($_.Exception.Message)" "ERROR"
+                     $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NSG: $($_.Exception.Message)" }
+                     continue
                 }
-            } catch {
-                 Write-Log "Error creating NSG '$nsgName': $($_.Exception.Message)" "ERROR"
-                 $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NSG: $($_.Exception.Message)" }
-                 continue
+            } else {
+                Write-Log "Using existing NSG: $nsgName"
             }
+            $nicParams.NetworkSecurityGroupId = $nsg.Id
         } else {
-            Write-Log "Using existing NSG: $nsgName"
+            Write-Log "Skipping NSG creation (NoNSG specified)" "INFO"
         }
-        $nicParams.NetworkSecurityGroupId = $nsg.Id
     } else {
         Write-Log "Skipping public IP creation (NoPublicIP specified)" "INFO"
     }
 
-    try {
-        $nic = New-AzNetworkInterface @nicParams
-    } catch {
-         Write-Log "Error creating NIC '$nicName': $($_.Exception.Message)" "ERROR"
-         $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NIC: $($_.Exception.Message)" }
-         continue
+    # Wait for all network resources to propagate before creating NIC
+    Write-Log "Waiting for network resources to propagate..."
+    Start-Sleep -Seconds 5
+
+    # Create NIC with retry logic for propagation issues
+    $nic = $null
+    $nicRetries = 3
+    for ($nicRetry = 1; $nicRetry -le $nicRetries; $nicRetry++) {
+        try {
+            $nic = New-AzNetworkInterface @nicParams
+            break
+        } catch {
+            $errMsg = $_.Exception.Message
+            if ($nicRetry -lt $nicRetries -and $errMsg -match "NotFound|not found") {
+                Write-Log "NIC creation failed with propagation error, retry $nicRetry/$nicRetries..." "WARN"
+                Start-Sleep -Seconds 10
+            } else {
+                Write-Log "Error creating NIC '$nicName': $errMsg" "ERROR"
+                $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NIC: $errMsg" }
+                $nic = $null
+                break
+            }
+        }
     }
+    if (-not $nic) { continue }
 
     try {
         # VM Config
