@@ -244,6 +244,98 @@ pwsh ./change-ip-to-static.ps1 -Force
 - **SRE**: Website reliability monitoring with statistical analysis
 - **Development**: Spot instance management for cost-effective development environments
 
+## Troubleshooting
+
+### Public IP Quota Errors
+
+Azure has a default limit of **20 Standard Public IPs per region per subscription**. When this limit is reached, you may see "ResourceNotFound" errors during IP creation - this is actually a masked quota exhaustion error, not a missing resource.
+
+**Symptoms:**
+- `ResourceNotFound` errors when creating Public IPs
+- VM creation fails after VNet/Subnet succeed
+- `QuotaExceeded` or `OperationNotAllowed` errors
+
+**Check IP quota manually:**
+
+PowerShell:
+```powershell
+Get-AzNetworkUsage -Location "eastus" | Where-Object { $_.Name.Value -eq "StandardPublicIPAddresses" }
+```
+
+Azure CLI:
+```bash
+az network list-usages --location eastus --query "[?contains(name.value, 'StandardPublicIPAddresses')]"
+```
+
+**Solutions:**
+
+1. **Request quota increase** - Via Azure Portal > Quotas > Networking, or use `-RequestQuota` switch with create-spot-vms.ps1
+
+2. **Use NAT Gateway** - One IP for multiple VMs: `pwsh ./create-spot-vms.ps1 -NoPublicIP -UseNatGateway`
+   - Cost: ~$33/month vs ~$77/month for 21 individual IPs
+
+3. **Clean orphaned IPs** - Unattached IPs consume quota:
+   ```powershell
+   # List orphaned IPs
+   Get-AzPublicIpAddress -ResourceGroupName "MyRG" | Where-Object { $null -eq $_.IpConfiguration }
+   # Delete them
+   Get-AzPublicIpAddress -ResourceGroupName "MyRG" | Where-Object { $null -eq $_.IpConfiguration } | Remove-AzPublicIpAddress -Force
+   ```
+
+4. **Skip public IPs** - For VMs that only need outbound: `pwsh ./create-spot-vms.ps1 -NoPublicIP`
+
+### NAT Gateway Architecture (Cost-Effective Alternative)
+
+For deployments with many VMs, using NAT Gateway instead of individual Public IPs can significantly reduce costs:
+
+**Architecture:**
+```
+Internet
+    |
+    v
+[NAT Gateway] <-- 1 Public IP (~$3.65/month)
+    |              + ~$32.85/month NAT Gateway fee
+    v              + $0.045/GB data processed
+[VNet/Subnet]
+    |
+    +-- VM1 (no public IP)
+    +-- VM2 (no public IP)
+    +-- ...
+    +-- VM20 (no public IP)
+    |
+[Jumpbox VM] <-- 1 Public IP for SSH access
+```
+
+**Cost Comparison (20+ VMs):**
+| Approach | Monthly Cost |
+|----------|-------------|
+| 21 Standard Public IPs | ~$77/month |
+| 1 NAT Gateway + 1 Jumpbox IP | ~$37/month + data costs |
+
+**Implementation:**
+```powershell
+# Create VMs with NAT Gateway (no individual public IPs)
+pwsh ./create-spot-vms.ps1 -NoPublicIP -UseNatGateway -VMName "worker1"
+
+# Create one Jumpbox VM with public IP for SSH access
+pwsh ./create-spot-vms.ps1 -VMName "jumpbox" -VMSize "Standard_B1s"
+```
+
+**SSH Access Pattern:**
+```bash
+# SSH to jumpbox first
+ssh azureuser@<jumpbox-public-ip>
+
+# From jumpbox, SSH to workers via private IPs
+ssh azureuser@10.0.0.5  # worker1 private IP
+ssh azureuser@10.0.0.6  # worker2 private IP
+```
+
+**Limitations:**
+- NAT Gateway is region-specific; multi-region deployments need multiple NAT Gateways
+- 5 regions x $33/month = $165/month (may exceed individual IP costs)
+- Jumpbox becomes single point of entry (consider availability)
+
 ## Security
 
 This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECURITY.md) for details.
