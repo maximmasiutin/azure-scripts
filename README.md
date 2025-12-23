@@ -340,6 +340,49 @@ ssh azureuser@10.0.0.6  # worker2 private IP
 - 5 regions x $33/month = $165/month (may exceed individual IP costs)
 - Jumpbox becomes single point of entry (consider availability)
 
+### Azure Preview Features (Feature Flags)
+
+Some newer VM series (like AMD v7 Turin) require Azure feature flag registration before use. If you see errors like "not available to the current subscription" with "feature flags registered", the VM size is in preview.
+
+**Enable Preview Features via Azure Portal:**
+
+1. Sign in to [Azure Portal](https://portal.azure.com)
+2. Search for **"Preview features"** in the top search box
+3. Or navigate: **Subscriptions** -> Select your subscription -> **Settings** -> **Preview features**
+4. Find the feature (e.g., search for "DALV7" for v7 series)
+5. Click **Register**
+
+**Registration Status:**
+- **Not registered** - Feature available but not enabled
+- **Pending** - Registration submitted, awaiting Microsoft approval
+- **Registered** - Feature is active and usable
+
+**Enable via Azure CLI:**
+```bash
+# Register a feature flag
+az feature register --namespace Microsoft.Compute --name DALV7Series
+
+# Check registration status
+az feature show --namespace Microsoft.Compute --name DALV7Series
+
+# After approval, propagate to provider
+az provider register -n Microsoft.Compute
+```
+
+**Important Notes:**
+- Some features require Microsoft approval and cannot be self-registered
+- Features that don't support self-registration may not appear in the portal
+- For restricted previews, contact Microsoft support or wait for general availability
+- Use `preview-vm-exclusions.txt` with `--exclude-sku-patterns-file` to avoid preview VM sizes
+
+**Workaround - Exclude Preview VMs:**
+```bash
+# Exclude v7 series (and other preview SKUs) from price queries
+python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns-file preview-vm-exclusions.txt
+```
+
+See [Microsoft Learn - Set up preview features](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/preview-features) for more details.
+
 ## Security
 
 This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECURITY.md) for details.
