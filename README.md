@@ -27,7 +27,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - **Per-Core Pricing**: Find cheapest spot price per vCPU core across VM series with `--min-cores` and `--max-cores`
    - **ARM VM Support**: Supports ARM-based VMs (e.g., D4ps_v5, D4pls_v5) with automatic detection and proper Azure API querying
-   - Exclusion Filters: Exclude specific regions, VM sizes, or ARM VMs via `--exclude-arm`
+   - Exclusion Filters: Exclude specific regions, VM sizes, SKU patterns (# = digits), or ARM VMs via `--exclude-arm`
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
    - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format; `--return-region-json` outputs JSON for direct parsing
@@ -60,6 +60,10 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      # Exclude specific regions or VM sizes
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt
+
+     # Exclude by SKU pattern (# = digits wildcard)
+     python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns "D#ps_v6,D#pds_v6"
+     # Excludes D4ps_v6, D8ps_v6, D16ps_v6, etc. and all Dpds_v6 variants
 
      # PowerShell integration (text output)
      # $result = python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
