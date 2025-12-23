@@ -464,6 +464,64 @@ function Test-SpotQuota {
     }
 }
 
+function Test-PublicIPQuota {
+    param(
+        [string]$Location,
+        [int]$RequiredIPs = 1
+    )
+
+    Write-Log "Checking Public IP quota in $Location..."
+
+    try {
+        $usage = Get-AzNetworkUsage -Location $Location -ErrorAction Stop
+        # Standard SKU Public IPs (what we use)
+        $ipQuota = $usage | Where-Object { $_.Name.Value -eq "StandardPublicIPAddresses" }
+
+        if ($ipQuota) {
+            $available = $ipQuota.Limit - $ipQuota.CurrentValue
+            Write-Log "Standard Public IP quota: $($ipQuota.CurrentValue)/$($ipQuota.Limit) (available: $available)"
+
+            if ($available -ge $RequiredIPs) {
+                return @{
+                    Success = $true
+                    Available = $available
+                    Required = $RequiredIPs
+                    Limit = $ipQuota.Limit
+                    CurrentValue = $ipQuota.CurrentValue
+                }
+            } else {
+                return @{
+                    Success = $false
+                    Available = $available
+                    Required = $RequiredIPs
+                    Limit = $ipQuota.Limit
+                    CurrentValue = $ipQuota.CurrentValue
+                    Message = "Insufficient Public IP quota: need $RequiredIPs, only $available available (limit: $($ipQuota.Limit))"
+                }
+            }
+        } else {
+            Write-Log "No Standard Public IP quota entry found" "WARN"
+            return @{
+                Success = $true  # Assume OK if no quota entry (unlikely)
+                Available = 999
+                Required = $RequiredIPs
+                Message = "No quota entry found, assuming OK"
+            }
+        }
+    }
+    catch {
+        $errorMsg = $_.Exception.Message
+        Write-Log "Error checking Public IP quota: $errorMsg" "WARN"
+        # Don't fail on quota check errors - let the actual creation fail if needed
+        return @{
+            Success = $true
+            Available = 0
+            Required = $RequiredIPs
+            Message = "Could not check quota: $errorMsg"
+        }
+    }
+}
+
 function Show-QuotaIncreaseInstructions {
     param(
         [string]$Location,
@@ -554,6 +612,41 @@ if (-not $SkipQuotaCheck) {
         }
     } else {
         Write-Log "Quota check passed: $($quotaResult.Available) spot cores available"
+    }
+
+    # Check Public IP quota (only if we're creating public IPs)
+    if (-not $NoPublicIP) {
+        $ipQuotaResult = Test-PublicIPQuota -Location $Location -RequiredIPs $vmNames.Count
+
+        if (-not $ipQuotaResult.Success) {
+            Write-Log "Public IP quota check failed: $($ipQuotaResult.Message)" "ERROR"
+            Write-Log "============================================" "WARN"
+            Write-Log "PUBLIC IP QUOTA INCREASE REQUIRED" "WARN"
+            Write-Log "============================================" "WARN"
+            Write-Log "Location: $Location"
+            Write-Log "Current usage: $($ipQuotaResult.CurrentValue)/$($ipQuotaResult.Limit)"
+            Write-Log "Required: $($vmNames.Count) additional IPs"
+            Write-Log ""
+            Write-Log "Options:"
+            Write-Log "1. Request quota increase via Azure Portal > Quotas > Networking"
+            Write-Log "2. Use -NoPublicIP to skip public IP creation (requires NAT Gateway or jumpbox)"
+            Write-Log "3. Use -NoPublicIP -UseNatGateway to use NAT Gateway for outbound traffic"
+            Write-Log "============================================" "WARN"
+
+            if (-not $Force) {
+                Write-Log "Use -Force to attempt VM creation anyway" "WARN"
+                return @{
+                    Success = $false
+                    QuotaError = $true
+                    Error = "Public IP quota check failed: $($ipQuotaResult.Message)"
+                    Location = $Location
+                }
+            } else {
+                Write-Log "Force flag set, attempting VM creation despite IP quota warning..." "WARN"
+            }
+        } else {
+            Write-Log "Public IP quota check passed: $($ipQuotaResult.Available) IPs available"
+        }
     }
 }
 
@@ -784,29 +877,40 @@ foreach ($vmN in $vmNames) {
         $nicParams.EnableAcceleratedNetworking = $true
     }
 
-    # Public IP
+    # Public IP (with retry for Azure propagation delays)
     $pipName = $null
     $nsg = $null
     if (-not $NoPublicIP) {
         $pipName = "$vmN-pip"
-        try {
-            $pipParams = @{
-                Name = $pipName
-                ResourceGroupName = $ResourceGroupName
-                Location = $Location
-                AllocationMethod = "Static"
-                Sku = "Standard"
-                ErrorAction = "Stop"
+        $pip = $null
+        $pipRetries = 3
+        for ($pipAttempt = 1; $pipAttempt -le $pipRetries; $pipAttempt++) {
+            try {
+                $pipParams = @{
+                    Name = $pipName
+                    ResourceGroupName = $ResourceGroupName
+                    Location = $Location
+                    AllocationMethod = "Static"
+                    Sku = "Standard"
+                    ErrorAction = "Stop"
+                }
+                if ($ForceOverwrite) { $pipParams.Force = $true }
+                $pip = New-AzPublicIpAddress @pipParams
+                $nicParams.PublicIpAddressId = $pip.Id
+                Write-Log "Created public IP: $pipName"
+                break
+            } catch {
+                if ($pipAttempt -lt $pipRetries) {
+                    Write-Log "Public IP creation failed (attempt $pipAttempt/$pipRetries): $($_.Exception.Message)" "WARN"
+                    Write-Log "Waiting 15s before retry..." "WARN"
+                    Start-Sleep -Seconds 15
+                } else {
+                    Write-Log "Error creating Public IP '$pipName': $($_.Exception.Message)" "ERROR"
+                    $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $($_.Exception.Message)" }
+                }
             }
-            if ($ForceOverwrite) { $pipParams.Force = $true }
-            $pip = New-AzPublicIpAddress @pipParams
-            $nicParams.PublicIpAddressId = $pip.Id
-            Write-Log "Created public IP: $pipName"
-        } catch {
-             Write-Log "Error creating Public IP '$pipName': $($_.Exception.Message)" "ERROR"
-             $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $($_.Exception.Message)" }
-             continue
         }
+        if (-not $pip) { continue }
 
         # Create NSG (unless -NoNSG is specified)
         if (-not $NoNSG) {
