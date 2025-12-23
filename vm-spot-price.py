@@ -39,6 +39,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from tabulate import tabulate
 import json
+import re
 
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
@@ -458,7 +459,8 @@ VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE
 
 def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[List[Any]],
                            non_spot: bool, low_priority: bool,
-                           excluded_regions: set, excluded_vm_sizes: set) -> None:
+                           excluded_regions: set, excluded_vm_sizes: set,
+                           excluded_sku_patterns: List[re.Pattern] = None) -> None:
     """Process a single pricing item for per-core mode."""
     try:
         arm_sku_name: str = item.get("armSkuName", "")
@@ -516,6 +518,12 @@ def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[
         if normalized_sku in excluded_vm_sizes:
             return
 
+        # Filter excluded SKU patterns
+        if excluded_sku_patterns:
+            for pattern in excluded_sku_patterns:
+                if pattern.match(normalized_sku):
+                    return
+
         price_per_core = retail_price / cores
 
         per_core_data.append([
@@ -549,6 +557,8 @@ def main() -> None:
     parser.add_argument('--exclude-regions-file', type=str, action='append', help='File containing regions to exclude (one per line). Can be specified multiple times.')
     parser.add_argument('--exclude-vm-sizes', type=str, help='Comma-separated list of VM sizes to exclude (e.g., D4pls_v5,D4ps_v5)')
     parser.add_argument('--exclude-vm-sizes-file', type=str, help='File containing VM sizes to exclude (one per line)')
+    parser.add_argument('--exclude-sku-patterns', type=str, help='Comma-separated SKU patterns to exclude (# = digits). Example: "D#ps_v6,E#pds_v6"')
+    parser.add_argument('--exclude-sku-patterns-file', type=str, help='File containing SKU patterns to exclude (one per line, # = digits)')
     parser.add_argument('--log-level', type=str, help='Set the logging level')
     parser.add_argument('--output-format', choices=['table', 'json', 'csv'], default='table', help='Output format (default: %(default)s)')
     parser.add_argument('--output-file', help='Save output to file instead of stdout')
@@ -644,6 +654,37 @@ def main() -> None:
     if excluded_vm_sizes:
         logging.debug(f"Excluding VM sizes: {', '.join(sorted(excluded_vm_sizes))}")
 
+    # Build excluded SKU patterns list (as compiled regex)
+    excluded_sku_patterns: List[re.Pattern] = []
+    sku_pattern_strings: List[str] = []
+    if args.exclude_sku_patterns:
+        for pattern in args.exclude_sku_patterns.split(','):
+            pattern = pattern.strip()
+            if pattern:
+                sku_pattern_strings.append(pattern)
+    if args.exclude_sku_patterns_file:
+        try:
+            with open(args.exclude_sku_patterns_file, 'r') as f:
+                for line in f:
+                    pattern = line.strip()
+                    if pattern and not pattern.startswith('#'):
+                        sku_pattern_strings.append(pattern)
+        except IOError as e:
+            logging.warning(f"Could not read exclude-sku-patterns-file: {e}")
+    # Convert patterns to regex (# = one or more digits)
+    for pattern in sku_pattern_strings:
+        # Escape regex special chars except #, then replace # with \d+
+        regex_pattern = re.escape(pattern).replace(r'\#', r'\d+')
+        # Match full SKU name (case insensitive)
+        regex_pattern = f"^{regex_pattern}$"
+        try:
+            excluded_sku_patterns.append(re.compile(regex_pattern, re.IGNORECASE))
+            logging.debug(f"SKU exclusion pattern: {pattern} -> {regex_pattern}")
+        except re.error as e:
+            logging.warning(f"Invalid SKU pattern '{pattern}': {e}")
+    if excluded_sku_patterns:
+        logging.debug(f"Excluding {len(excluded_sku_patterns)} SKU patterns")
+
     # Configure logging
     if args.log_level:
         allowed_levels = ("ERROR", "INFO", "WARNING", "DEBUG")
@@ -726,7 +767,7 @@ def main() -> None:
                 # Process items for this series
                 for item in items:
                     _process_per_core_item(item, args, per_core_data, non_spot, low_priority,
-                                           excluded_regions, excluded_vm_sizes)
+                                           excluded_regions, excluded_vm_sizes, excluded_sku_patterns)
 
             if not return_region:
                 print()  # New line after progress
