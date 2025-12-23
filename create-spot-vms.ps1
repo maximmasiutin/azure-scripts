@@ -1140,10 +1140,12 @@ foreach ($vmN in $vmNames) {
         $isArm = Test-IsArmVM -VMSize $VMSize
 
         # TrustedLaunch is not supported on ARM VMs (D*p*_v5, D*p*_v6, E*p*_v5, etc.)
-        if ($SecurityType -and -not $isArm) {
+        # Must explicitly set "Standard" for ARM - skipping the call lets image default (TrustedLaunch) apply
+        if ($isArm) {
+            Write-Log "Setting Standard security type for ARM VM: $VMSize" "DEBUG"
+            $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType "Standard"
+        } elseif ($SecurityType) {
             $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
-        } elseif ($isArm) {
-            Write-Log "Skipping TrustedLaunch for ARM VM: $VMSize" "DEBUG"
         }
 
         if (-not $ImageOffer -or -not $ImageSku) {
