@@ -119,7 +119,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      - Use `-PreferServer` to use full server image instead of minimal
    - Features: Batch creation of multiple spot instances with consistent configuration
    - Cost Optimization: Leverages spot pricing for development/testing environments
-   - **Automatic Quota Request**: Use `-RequestQuota` switch to automatically create an Azure Support ticket if spot quota is insufficient in the target region.
+   - **Quota Checks**: Pre-flight checks for both Spot vCPU quota and Public IP quota
+     - Spot vCPU quota: Checks `lowPriorityCores` limit before VM creation
+     - Public IP quota: Checks `StandardPublicIPAddresses` limit (default: 20/region)
+     - Use `-RequestQuota` to auto-create Azure Support ticket for quota increase
+     - Use `-NoPublicIP -UseNatGateway` to avoid IP quota limits (1 IP for all VMs)
    - **Custom Initialization**: Supports passing cloud-init scripts via `-CustomData` or downloading from `-InitScriptUrl`.
    - **Network Flexibility**: Supports `-NoPublicIP` (default: creates public IP) and `-UseNatGateway`.
    - **Resiliency**: Auto-detects supported regions and blacklists specific VM sizes if unavailable. Robust error handling ensures stability.
