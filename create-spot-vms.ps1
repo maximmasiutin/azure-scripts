@@ -1134,14 +1134,17 @@ foreach ($vmN in $vmNames) {
         # VM Config
         $vmConfig = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
 
-        if ($SecurityType) {
-            $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
-        }
-
         # Auto-detect Ubuntu image based on VM type (ARM vs x64) and user preferences
         $actualImageOffer = $ImageOffer
         $actualImageSku = $ImageSku
         $isArm = Test-IsArmVM -VMSize $VMSize
+
+        # TrustedLaunch is not supported on ARM VMs (D*p*_v5, D*p*_v6, E*p*_v5, etc.)
+        if ($SecurityType -and -not $isArm) {
+            $vmConfig = Set-AzVMSecurityProfile -VM $vmConfig -SecurityType $SecurityType
+        } elseif ($isArm) {
+            Write-Log "Skipping TrustedLaunch for ARM VM: $VMSize" "DEBUG"
+        }
 
         if (-not $ImageOffer -or -not $ImageSku) {
             # Auto-detect best Ubuntu image for this VM type and location
