@@ -69,7 +69,8 @@ param(
     [switch]$ForceOverwrite,  # Force resource overwrite without prompting
     [switch]$RequestQuota,  # Attempt to auto-request quota increase on failure
     [switch]$BlockSSH,      # If set, NSG will be created but SSH traffic blocked (default: allowed)
-    [switch]$NoNSG          # If set, skip NSG creation entirely (use with RemoveSSH in init script)
+    [switch]$NoNSG,         # If set, skip NSG creation entirely (use with RemoveSSH in init script)
+    [switch]$CleanupOrphans # If set, delete orphaned Public IPs before VM creation
 )
 
 # PowerShell version check
@@ -522,6 +523,103 @@ function Test-PublicIPQuota {
     }
 }
 
+function Remove-OrphanedPublicIPs {
+    param(
+        [string]$ResourceGroupName,
+        [switch]$WhatIf
+    )
+
+    Write-Log "Checking for orphaned Public IPs in $ResourceGroupName..."
+
+    try {
+        $allIPs = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+        $orphans = $allIPs | Where-Object { $null -eq $_.IpConfiguration }
+
+        if ($orphans.Count -eq 0) {
+            Write-Log "No orphaned Public IPs found"
+            return 0
+        }
+
+        Write-Log "Found $($orphans.Count) orphaned Public IP(s)" "WARN"
+
+        foreach ($ip in $orphans) {
+            if ($WhatIf) {
+                Write-Log "Would delete orphaned IP: $($ip.Name) ($($ip.IpAddress))" "WARN"
+            } else {
+                Write-Log "Deleting orphaned IP: $($ip.Name) ($($ip.IpAddress))" "WARN"
+                Remove-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name $ip.Name -Force -ErrorAction Stop
+            }
+        }
+
+        return $orphans.Count
+    }
+    catch {
+        $errMsg = $_.Exception.Message
+        if ($errMsg -match "ResourceGroupNotFound|was not found") {
+            Write-Log "Resource group $ResourceGroupName not found, skipping orphan cleanup" "DEBUG"
+            return 0
+        }
+        Write-Log "Error checking for orphaned IPs: $errMsg" "WARN"
+        return 0
+    }
+}
+
+function Request-PublicIPQuotaIncrease {
+    param(
+        [string]$Location,
+        [int]$RequestedLimit = 50
+    )
+
+    Write-Log "Requesting Public IP quota increase in $Location (limit: $RequestedLimit)..." "INFO"
+
+    try {
+        $context = Get-AzContext
+        $subscriptionId = $context.Subscription.Id
+
+        # Register Microsoft.Quota provider if not registered
+        $provider = Get-AzResourceProvider -ProviderNamespace Microsoft.Quota -ErrorAction SilentlyContinue
+        if (-not $provider -or $provider.RegistrationState -ne "Registered") {
+            Write-Log "Registering Microsoft.Quota provider..." "INFO"
+            Register-AzResourceProvider -ProviderNamespace Microsoft.Quota | Out-Null
+            Start-Sleep -Seconds 10
+        }
+
+        # Build the quota request payload
+        $payload = @{
+            properties = @{
+                limit = @{ limitObjectType = "LimitValue"; value = $RequestedLimit }
+                name = @{ value = "PublicIPAddresses" }
+                resourceType = "PublicIpAddresses"
+            }
+        } | ConvertTo-Json -Depth 5
+
+        # API endpoint for Public IP quota
+        $apiVersion = "2023-02-01"
+        $resourceName = "PublicIPAddresses"
+        $path = "/subscriptions/$subscriptionId/providers/Microsoft.Network/locations/$Location/providers/Microsoft.Quota/quotas/${resourceName}?api-version=$apiVersion"
+
+        Write-Log "Submitting quota request via REST API..." "DEBUG"
+        $response = Invoke-AzRestMethod -Method PUT -Path $path -Payload $payload
+
+        if ($response.StatusCode -eq 200 -or $response.StatusCode -eq 201 -or $response.StatusCode -eq 202) {
+            $content = $response.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
+            $state = if ($content.properties.provisioningState) { $content.properties.provisioningState } else { "Submitted" }
+            Write-Log "Quota request submitted: $state" "SUCCESS"
+            Write-Log "Check status in Azure Portal > Quotas > Networking" "INFO"
+            return $true
+        } else {
+            Write-Log "Quota request failed: HTTP $($response.StatusCode)" "WARN"
+            Write-Log "Response: $($response.Content)" "DEBUG"
+            return $false
+        }
+    }
+    catch {
+        Write-Log "Error requesting quota increase: $($_.Exception.Message)" "WARN"
+        Write-Log "Request quota manually via Azure Portal > Quotas > Networking" "INFO"
+        return $false
+    }
+}
+
 function Show-QuotaIncreaseInstructions {
     param(
         [string]$Location,
@@ -572,6 +670,14 @@ if ($VMName) {
 }
 
 Write-Log "VMs to create: $($vmNames -join ', ')"
+
+# ==== ORPHAN CLEANUP ====
+if ($CleanupOrphans) {
+    $orphanCount = Remove-OrphanedPublicIPs -ResourceGroupName $ResourceGroupName
+    if ($orphanCount -gt 0) {
+        Write-Log "Cleaned up $orphanCount orphaned Public IP(s)" "SUCCESS"
+    }
+}
 
 # ==== QUOTA CHECK ====
 if (-not $SkipQuotaCheck) {
@@ -632,6 +738,14 @@ if (-not $SkipQuotaCheck) {
             Write-Log "2. Use -NoPublicIP to skip public IP creation (requires NAT Gateway or jumpbox)"
             Write-Log "3. Use -NoPublicIP -UseNatGateway to use NAT Gateway for outbound traffic"
             Write-Log "============================================" "WARN"
+
+            if ($RequestQuota) {
+                Write-Log "RequestQuota switch is ON. Attempting automatic IP quota request..." "INFO"
+                $newLimit = [Math]::Max(50, $ipQuotaResult.Limit + $vmNames.Count + 10)
+                Request-PublicIPQuotaIncrease -Location $Location -RequestedLimit $newLimit
+            } else {
+                Write-Log "Use -RequestQuota to attempt automatic quota increase" "INFO"
+            }
 
             if (-not $Force) {
                 Write-Log "Use -Force to attempt VM creation anyway" "WARN"
@@ -877,13 +991,19 @@ foreach ($vmN in $vmNames) {
         $nicParams.EnableAcceleratedNetworking = $true
     }
 
-    # Public IP (with retry for Azure propagation delays)
+    # Public IP (with smart retry for Azure propagation delays)
+    # Error handling strategy:
+    #   - QuotaExceeded/Limit: STOP immediately (quota is hard cap, waiting won't help)
+    #   - ResourceGroupNotFound: Wait 30s and retry (propagation issue)
+    #   - ResourceNotFound during creation: Likely quota, stop retrying
+    #   - Network/timeout: Retry with 15s delay
     $pipName = $null
     $nsg = $null
     if (-not $NoPublicIP) {
         $pipName = "$vmN-pip"
         $pip = $null
         $pipRetries = 3
+        $shouldStopRetrying = $false
         for ($pipAttempt = 1; $pipAttempt -le $pipRetries; $pipAttempt++) {
             try {
                 $pipParams = @{
@@ -900,17 +1020,47 @@ foreach ($vmN in $vmNames) {
                 Write-Log "Created public IP: $pipName"
                 break
             } catch {
-                if ($pipAttempt -lt $pipRetries) {
-                    Write-Log "Public IP creation failed (attempt $pipAttempt/$pipRetries): $($_.Exception.Message)" "WARN"
-                    Write-Log "Waiting 15s before retry..." "WARN"
-                    Start-Sleep -Seconds 15
-                } else {
-                    Write-Log "Error creating Public IP '$pipName': $($_.Exception.Message)" "ERROR"
-                    $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $($_.Exception.Message)" }
+                $errMsg = $_.Exception.Message
+
+                # Quota errors - stop immediately, no point retrying
+                if ($errMsg -match "QuotaExceeded|limit|exceeded|PublicIPAddressCountLimitReached") {
+                    Write-Log "Public IP quota limit reached - stopping retries" "ERROR"
+                    Write-Log "Request quota increase or use -NoPublicIP -UseNatGateway" "WARN"
+                    $results += @{ VMName = $vmN; Success = $false; Error = "Public IP quota exceeded"; QuotaError = $true }
+                    $shouldStopRetrying = $true
+                    break
+                }
+                # ResourceNotFound during creation often means quota exhaustion (masked error)
+                elseif ($errMsg -match "ResourceNotFound" -and $errMsg -notmatch "ResourceGroupNotFound") {
+                    Write-Log "ResourceNotFound during IP creation - likely quota exhaustion" "ERROR"
+                    $results += @{ VMName = $vmN; Success = $false; Error = "IP creation failed (likely quota)"; QuotaError = $true }
+                    $shouldStopRetrying = $true
+                    break
+                }
+                # ResourceGroupNotFound - propagation issue, wait longer
+                elseif ($errMsg -match "ResourceGroupNotFound") {
+                    if ($pipAttempt -lt $pipRetries) {
+                        Write-Log "Resource group not propagated (attempt $pipAttempt/$pipRetries), waiting 30s..." "WARN"
+                        Start-Sleep -Seconds 30
+                    } else {
+                        Write-Log "Error creating Public IP '$pipName': $errMsg" "ERROR"
+                        $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $errMsg" }
+                    }
+                }
+                # Other errors - normal retry with 15s delay
+                else {
+                    if ($pipAttempt -lt $pipRetries) {
+                        Write-Log "Public IP creation failed (attempt $pipAttempt/$pipRetries): $errMsg" "WARN"
+                        Write-Log "Waiting 15s before retry..." "WARN"
+                        Start-Sleep -Seconds 15
+                    } else {
+                        Write-Log "Error creating Public IP '$pipName': $errMsg" "ERROR"
+                        $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create Public IP: $errMsg" }
+                    }
                 }
             }
         }
-        if (-not $pip) { continue }
+        if ($shouldStopRetrying -or (-not $pip)) { continue }
 
         # Create NSG (unless -NoNSG is specified)
         if (-not $NoNSG) {
