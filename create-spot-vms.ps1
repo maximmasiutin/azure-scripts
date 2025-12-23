@@ -508,6 +508,7 @@ function Test-PublicIPQuota {
                 Available = 999
                 Required = $RequiredIPs
                 Message = "No quota entry found, assuming OK"
+                QuotaUnknown = $true
             }
         }
     }
@@ -520,6 +521,7 @@ function Test-PublicIPQuota {
             Available = 0
             Required = $RequiredIPs
             Message = "Could not check quota: $errorMsg"
+            QuotaUnknown = $true
         }
     }
 }
@@ -760,7 +762,11 @@ if (-not $SkipQuotaCheck) {
                 Write-Log "Force flag set, attempting VM creation despite IP quota warning..." "WARN"
             }
         } else {
-            Write-Log "Public IP quota check passed: $($ipQuotaResult.Available) IPs available"
+            if ($ipQuotaResult.QuotaUnknown) {
+                Write-Log "Public IP quota check passed (quota entry not found, assuming no limit)"
+            } else {
+                Write-Log "Public IP quota check passed: $($ipQuotaResult.Available) IPs available"
+            }
         }
     }
 }
