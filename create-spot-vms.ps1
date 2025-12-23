@@ -70,7 +70,8 @@ param(
     [switch]$RequestQuota,  # Attempt to auto-request quota increase on failure
     [switch]$BlockSSH,      # If set, NSG will be created but SSH traffic blocked (default: allowed)
     [switch]$NoNSG,         # If set, skip NSG creation entirely (use with RemoveSSH in init script)
-    [switch]$CleanupOrphans # If set, delete orphaned Public IPs before VM creation
+    [switch]$CleanupOrphans, # If set, delete orphaned Public IPs before VM creation
+    [switch]$TrustedLaunchOnly  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
 )
 
 # PowerShell version check
@@ -1281,6 +1282,61 @@ foreach ($vmN in $vmNames) {
         # Check if unsupported region
         if ($errorMsg -match "LocationNotAvailableForResourceType|not available for resource type|NoRegisteredProviderFound") {
             $resultEntry.UnsupportedRegion = $true
+        }
+
+        # Check if VM size requires feature flag registration (preview/restricted SKUs)
+        if ($errorMsg -match "not available to the current subscription" -and $errorMsg -match "feature flags registered") {
+            $resultEntry.FeatureFlagRequired = $true
+            $resultEntry.UnsupportedVMSize = $true
+            # Extract required feature flags from error message
+            if ($errorMsg -match "feature flags registered\s*:\s*([^\.\n]+)") {
+                $resultEntry.RequiredFeatureFlags = $Matches[1].Trim()
+            }
+            Write-Log "VM size $VMSize requires feature flag registration (preview/restricted)" "WARN"
+            Write-Log "Required flags: $($resultEntry.RequiredFeatureFlags)" "WARN"
+            Write-Log "This VM size is in limited preview - register via Azure Portal or contact support" "WARN"
+        }
+
+        # Check if TrustedLaunch error - retry with Standard security type (unless TrustedLaunchOnly)
+        if ($errorMsg -match "TrustedLaunch" -and $errorMsg -match "not supported") {
+            if ($TrustedLaunchOnly) {
+                Write-Log "TrustedLaunch not supported for $VMSize and -TrustedLaunchOnly is set, not retrying" "ERROR"
+                $resultEntry.TrustedLaunchRequired = $true
+            } else {
+                Write-Log "TrustedLaunch not supported for $VMSize, retrying with Standard security type..." "WARN"
+                try {
+                    # Rebuild VM config with Standard security type
+                    $vmConfigRetry = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
+                    $vmConfigRetry = Set-AzVMSecurityProfile -VM $vmConfigRetry -SecurityType "Standard"
+                    $vmConfigRetry = Set-AzVMSourceImage -VM $vmConfigRetry -PublisherName $ImagePublisher -Offer $actualImageOffer -Skus $actualImageSku -Version $ImageVersion
+                    $vmConfigRetry = Add-AzVMNetworkInterface -VM $vmConfigRetry -Id $nic.Id -DeleteOption "Delete"
+                    $vmConfigRetry = Set-AzVMOSDisk -VM $vmConfigRetry -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
+                    $vmConfigRetry = Set-AzVMBootDiagnostic -VM $vmConfigRetry -Enable
+                    $vmConfigRetry = Set-AzVMOperatingSystem -VM $vmConfigRetry -Linux -ComputerName $vmN -Credential $credential
+                    if ($CustomData) {
+                        $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
+                        $vmConfigRetry.OSProfile.CustomData = $encodedData
+                    }
+                    $vmRetryParams = @{
+                        ResourceGroupName = $ResourceGroupName
+                        Location = $Location
+                        VM = $vmConfigRetry
+                        Verbose = $true
+                        ErrorAction = "Stop"
+                    }
+                    $vm = New-AzVM @vmRetryParams
+                    Write-Log "VM created on retry with Standard security: $vmN" "SUCCESS"
+
+                    # Update result entry to success
+                    $resultEntry.Success = $true
+                    $resultEntry.Remove('Error')
+                    $resultEntry.SecurityTypeRetry = $true
+                } catch {
+                    $retryError = $_.Exception.Message
+                    Write-Log "Retry with Standard security also failed: $retryError" "ERROR"
+                    $resultEntry.RetryError = $retryError
+                }
+            }
         }
 
         $results += $resultEntry
