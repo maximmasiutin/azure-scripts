@@ -68,6 +68,10 @@
     See: https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/preview-features
 #>
 
+# PSScriptAnalyzer suppressions for Azure infrastructure script
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Interactive console script requires colored output')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidOverwritingBuiltInCmdlets', '', Justification='Write-Log is a custom logging function')]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '', Justification='Function returns collection of features')]
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory = $false)]

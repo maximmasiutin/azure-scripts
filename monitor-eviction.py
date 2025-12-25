@@ -19,15 +19,16 @@
 
 # The hook is executed before stopping the services.
 
+import os
+import re
 from argparse import ArgumentParser
 from os import path, access, X_OK
 from platform import uname, node
-from sys import stderr, exit
 from subprocess import run
+from sys import stderr, exit
 from time import sleep
+
 from requests import get, exceptions
-import re
-import os
 
 metadataUrl = "http://169.254.169.254/metadata/scheduledevents"
 endpointTimeout = 10
@@ -35,6 +36,7 @@ headerValue = {"Metadata": "true"}
 queryParams = {"api-version": "2020-07-01"}
 stopStatuses = ["Scheduled", "Started"]
 stopTypes = ["Reboot", "Redeploy", "Freeze", "Preempt", "Terminate"]
+
 
 def get_scheduled_events(max_retries=3, backoff_factor=2):
     """Get scheduled events with retry logic and better error handling."""
@@ -51,6 +53,7 @@ def get_scheduled_events(max_retries=3, backoff_factor=2):
             print(f"Metadata service error (attempt {attempt + 1}), retrying in {wait_time}s: {e}")
             sleep(wait_time)
     return {}
+
 
 def validate_hook_path(hook_path):
     """
@@ -75,6 +78,7 @@ def validate_hook_path(hook_path):
     # Prevent directory traversal
     if '..' in hook_path:
         raise ValueError("Hook path cannot contain '..' (directory traversal)")
+
 
 def eviction_action(a_services, a_hook):
     """Execute hook and stop services on eviction with improved security."""
@@ -108,12 +112,14 @@ def eviction_action(a_services, a_hook):
         except Exception as e:
             print(f"Error stopping service {service}: {e}")
 
+
 def is_valid_service_name(service_name):
     """Validate service name with stricter rules."""
     if not service_name or len(service_name) > 64:
         return False
     # Only allow alphanumeric, hyphens, underscores, and dots
     return re.match(r'^[a-zA-Z0-9_\-\.]+$', service_name) is not None
+
 
 def parse_args():
     parser = ArgumentParser(description="Monitor Azure spot VM eviction events.")
@@ -145,6 +151,7 @@ def parse_args():
             parser.error(f"Hook validation failed: {e}")
 
     return ret_services, ret_hook, ret_skip_azure_check, ret_dry_run
+
 
 if __name__ == "__main__":
     services, hook, skip_azure_check, dry_run = parse_args()

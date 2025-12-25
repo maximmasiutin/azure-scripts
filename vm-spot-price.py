@@ -27,19 +27,20 @@
 #   $region, $vmSize, $price, $unit = $result -split ' ', 4
 #   New-AzVM -ResourceGroupName $rg -Name $vmName -Location $region -Size $vmSize ...
 
+import json
+import logging
+import re
+import time
 from argparse import ArgumentParser, Namespace
+from functools import wraps
 from json import JSONDecodeError
 from sys import exit, stderr
-from typing import List, Dict, Any
-import time
-from functools import wraps
+from typing import List, Dict, Any, Optional
 
 from requests import Response, Session, exceptions
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from tabulate import tabulate
-import json
-import re
+from urllib3.util.retry import Retry
 
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
@@ -48,6 +49,7 @@ DEFAULT_SEARCH_VMSIZE: str = "8"
 DEFAULT_SEARCH_VMPATTERN: str = "B#s_v2"
 DEFAULT_SEARCH_VMWINDOWS: bool = False
 DEFAULT_SEARCH_VMLINUX: bool = True
+SPOT_FILTER_CLAUSE: str = " and contains(meterName, 'Spot')"
 
 
 def rate_limit(calls_per_second=2):
@@ -198,8 +200,8 @@ def print_progress(current: int, total: int, prefix: str = 'Progress') -> None:
     percent = (current / total) * 100
     bar_length = 50
     filled_length = int(bar_length * current // total)
-    bar = '#' * filled_length + '-' * (bar_length - filled_length)
-    print(f'\r{prefix}: |{bar}| {percent:.1f}%', end='', flush=True)
+    progress_bar = '#' * filled_length + '-' * (bar_length - filled_length)
+    print(f'\r{prefix}: |{progress_bar}| {percent:.1f}%', end='', flush=True)
 
 
 def extract_series_from_vm_size(vm_size: str) -> str:
@@ -211,7 +213,6 @@ def extract_series_from_vm_size(vm_size: str) -> str:
         D4as_v5 -> Dasv5
         B4ls_v2 -> Blsv2
     """
-    import re
     # Remove leading Standard_ if present
     vm_size = vm_size.replace("Standard_", "")
     # Remove numeric part (the vCPU count)
@@ -235,7 +236,6 @@ def extract_cores_from_sku(sku_name: str) -> int:
         Standard_B2ts_v2 -> 2
         Standard_E96as_v5 -> 96
     """
-    import re
     # Remove Standard_ prefix if present
     sku_name = sku_name.replace("Standard_", "")
     # Pattern: letter(s) + digits (the core count)
@@ -270,7 +270,6 @@ def is_arm_vm(sku_name: str) -> bool:
         Dpsv5 -> True (series name)
         Dplsv6 -> True (series name)
     """
-    import re
     # Remove Standard_ prefix if present
     sku_name = sku_name.replace("Standard_", "")
     # ARM VMs have 'p' after the first letter(s) and before 's' or 'l'
@@ -342,25 +341,25 @@ VM_SERIES_D_AMD_V5 = [
 # AMD v6 (EPYC 9004 Genoa @ 3.7 GHz)
 VM_SERIES_D_AMD_V6 = [
     "Dasv6", "Dadsv6",   # 96 vCPUs, 384 GiB (4:1)
-    "Dalsv6", "Daldsv6", # 96 vCPUs, 192 GiB (2:1)
+    "Dalsv6", "Daldsv6",  # 96 vCPUs, 192 GiB (2:1)
 ]
 
 # AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - Preview
 VM_SERIES_D_AMD_V7 = [
     "Dasv7", "Dadsv7",   # 160 vCPUs, 640 GiB (4:1)
-    "Dalsv7", "Daldsv7", # 160 vCPUs, 320 GiB (2:1)
+    "Dalsv7", "Daldsv7",  # 160 vCPUs, 320 GiB (2:1)
 ]
 
 # ARM v5 (Ampere Altra)
 VM_SERIES_D_ARM_V5 = [
     "Dpsv5", "Dpdsv5",   # 64 vCPUs, 208 GiB (4:1)
-    "Dplsv5", "Dpldsv5", # 64 vCPUs, 128 GiB (2:1)
+    "Dplsv5", "Dpldsv5",  # 64 vCPUs, 128 GiB (2:1)
 ]
 
 # ARM v6 (Azure Cobalt 100 @ 3.4 GHz) - Best price-performance
 VM_SERIES_D_ARM_V6 = [
     "Dpsv6", "Dpdsv6",   # 96 vCPUs, 384 GiB (4:1)
-    "Dplsv6", "Dpldsv6", # 96 vCPUs, 192 GiB (2:1)
+    "Dplsv6", "Dpldsv6",  # 96 vCPUs, 192 GiB (2:1)
 ]
 
 # =============================================================================
@@ -453,14 +452,11 @@ VM_SERIES_LATEST = (
     VM_SERIES_E_ARM_V6
 )
 
-# All series
-VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE
-
 
 def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[List[Any]],
                            non_spot: bool, low_priority: bool,
                            excluded_regions: set, excluded_vm_sizes: set,
-                           excluded_sku_patterns: List[re.Pattern] = None) -> None:
+                           excluded_sku_patterns: Optional[List[re.Pattern]] = None) -> None:
     """Process a single pricing item for per-core mode."""
     try:
         arm_sku_name: str = item.get("armSkuName", "")
@@ -541,7 +537,6 @@ def _process_per_core_item(item: Dict[str, Any], args: Any, per_core_data: List[
 
 
 def main() -> None:
-    import logging
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s: %(message)s')
 
     table_data: List[List[Any]] = []
@@ -614,18 +609,18 @@ def main() -> None:
     # Build excluded regions set
     excluded_regions: set = set()
     if args.exclude_regions:
-        for region in args.exclude_regions.split(','):
-            region = region.strip().lower()
-            if region:
-                excluded_regions.add(region)
+        for rgn in args.exclude_regions.split(','):
+            rgn = rgn.strip().lower()
+            if rgn:
+                excluded_regions.add(rgn)
     if args.exclude_regions_file:
         for exclude_file in args.exclude_regions_file:
             try:
-                with open(exclude_file, 'r') as f:
+                with open(exclude_file, 'r', encoding='utf-8') as f:
                     for line in f:
-                        region = line.strip().lower()
-                        if region and not region.startswith('#'):
-                            excluded_regions.add(region)
+                        rgn = line.strip().lower()
+                        if rgn and not rgn.startswith('#'):
+                            excluded_regions.add(rgn)
                 logging.debug(f"Loaded exclusions from {exclude_file}")
             except IOError as e:
                 logging.warning(f"Could not read exclude-regions-file {exclude_file}: {e}")
@@ -635,20 +630,20 @@ def main() -> None:
     # Build excluded VM sizes set
     excluded_vm_sizes: set = set()
     if args.exclude_vm_sizes:
-        for vm_size in args.exclude_vm_sizes.split(','):
-            vm_size = vm_size.strip()
-            if vm_size:
+        for sz in args.exclude_vm_sizes.split(','):
+            sz = sz.strip()
+            if sz:
                 # Normalize: remove Standard_ prefix if present, store lowercase
-                vm_size = vm_size.replace("Standard_", "").lower()
-                excluded_vm_sizes.add(vm_size)
+                sz = sz.replace("Standard_", "").lower()
+                excluded_vm_sizes.add(sz)
     if args.exclude_vm_sizes_file:
         try:
-            with open(args.exclude_vm_sizes_file, 'r') as f:
+            with open(args.exclude_vm_sizes_file, 'r', encoding='utf-8') as f:
                 for line in f:
-                    vm_size = line.strip()
-                    if vm_size and not vm_size.startswith('#'):
-                        vm_size = vm_size.replace("Standard_", "").lower()
-                        excluded_vm_sizes.add(vm_size)
+                    sz = line.strip()
+                    if sz and not sz.startswith('#'):
+                        sz = sz.replace("Standard_", "").lower()
+                        excluded_vm_sizes.add(sz)
         except IOError as e:
             logging.warning(f"Could not read exclude-vm-sizes-file: {e}")
     if excluded_vm_sizes:
@@ -664,7 +659,7 @@ def main() -> None:
                 sku_pattern_strings.append(pattern)
     if args.exclude_sku_patterns_file:
         try:
-            with open(args.exclude_sku_patterns_file, 'r') as f:
+            with open(args.exclude_sku_patterns_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     pattern = line.strip()
                     if pattern and not pattern.startswith('#'):
@@ -701,7 +696,7 @@ def main() -> None:
 
     # Per-core pricing mode
     if per_core_mode:
-        api_url: str = "https://prices.azure.com/api/retail/prices"
+        api_url = "https://prices.azure.com/api/retail/prices"
         session = create_resilient_session()
         max_pages = 50  # Pages per series
 
@@ -726,14 +721,14 @@ def main() -> None:
                 print(f"Searching for cheapest spot price per core ({args.min_cores}-{args.max_cores} vCPUs)...")
                 print(f"Querying {len(series_list)} VM series...")
 
-            for idx, series in enumerate(series_list):
+            for idx, series_name in enumerate(series_list):
                 if not return_region:
-                    print(f"\r[{idx + 1}/{len(series_list)}] {series}...", end='', flush=True)
+                    print(f"\r[{idx + 1}/{len(series_list)}] {series_name}...", end='', flush=True)
 
-                query = f"priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
-                query += f" and productName eq 'Virtual Machines {series} Series'"
+                query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
+                query += f" and productName eq 'Virtual Machines {series_name} Series'"
                 if not non_spot:
-                    query += " and contains(meterName, 'Spot')"
+                    query += SPOT_FILTER_CLAUSE
                 # Add region filter if specified
                 if args.region:
                     regions = [r.strip() for r in args.region.split(',') if r.strip()]
@@ -748,11 +743,11 @@ def main() -> None:
                 try:
                     json_data = fetch_pricing_data(api_url, {"$filter": query}, session, verbose=args.verbose)
                 except Exception as e:
-                    logging.debug(f"No data for {series}: {e}")
+                    logging.debug(f"No data for {series_name}: {e}")
                     continue
 
                 items = json_data.get("Items", [])
-                next_page: str = json_data.get("NextPageLink", "")
+                next_page = json_data.get("NextPageLink", "")
                 page_count = 1
 
                 while next_page and page_count < max_pages:
@@ -788,24 +783,24 @@ def main() -> None:
         # Output results
         if return_region:
             best = per_core_data[0]
-            region = best[5]
-            vm_size = best[0]
-            price = best[1]
-            unit = best[4]
+            best_region = best[5]
+            best_vm_size = best[0]
+            best_price = best[1]
+            best_unit = best[4]
             if args.return_region_json:
                 # JSON format for PowerShell parsing
                 result = {
-                    "region": region,
-                    "vmSize": vm_size,
-                    "price": price,
-                    "unit": unit
+                    "region": best_region,
+                    "vmSize": best_vm_size,
+                    "price": best_price,
+                    "unit": best_unit
                 }
                 print(json.dumps(result))
             else:
-                print(f"{region} {vm_size} {price} {unit}")
+                print(f"{best_region} {best_vm_size} {best_price} {best_unit}")
         else:
             print(f"\nFound {len(per_core_data)} VM options in {args.min_cores}-{args.max_cores} vCPU range")
-            print(f"Top 20 cheapest per-core options:\n")
+            print("Top 20 cheapest per-core options:\n")
 
             headers = ["SKU", "$/Hour", "$/Core/Hr", "Cores", "Region"]
             display_data = []
@@ -833,17 +828,17 @@ def main() -> None:
 
     if args.vm_sizes:
         # Parse comma-separated VM sizes
-        for vm_size in args.vm_sizes.split(','):
-            vm_size = vm_size.strip()
-            if not vm_size:
+        for vm_sz in args.vm_sizes.split(','):
+            vm_sz = vm_sz.strip()
+            if not vm_sz:
                 continue
             # Check if this VM size is excluded
-            normalized = vm_size.replace("Standard_", "").lower()
+            normalized = vm_sz.replace("Standard_", "").lower()
             if normalized in excluded_vm_sizes:
-                logging.debug(f"Skipping excluded VM size: {vm_size}")
+                logging.debug(f"Skipping excluded VM size: {vm_sz}")
                 continue
-            series = extract_series_from_vm_size(vm_size)
-            vm_sizes_list.append((vm_size, series))
+            extracted_series = extract_series_from_vm_size(vm_sz)
+            vm_sizes_list.append((vm_sz, extracted_series))
         if not vm_sizes_list:
             logging.error("No valid VM sizes provided in --vm-sizes (all may be excluded)")
             exit(1)
@@ -857,7 +852,7 @@ def main() -> None:
         series: str = series_pattern.replace("#", "").replace("_", "")
         vm_sizes_list.append((sku, series))
 
-    api_url: str = "https://prices.azure.com/api/retail/prices"
+    api_url = "https://prices.azure.com/api/retail/prices"
 
     if args.dry_run:
         print("DRY RUN - API Queries:")
@@ -865,7 +860,7 @@ def main() -> None:
         for sku, series in vm_sizes_list:
             query = f"armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
             if not non_spot:
-                query += " and contains(meterName, 'Spot')"
+                query += SPOT_FILTER_CLAUSE
             if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
                 windows_suffix = " Windows" if DEFAULT_SEARCH_VMWINDOWS else ""
                 if not DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
@@ -898,7 +893,7 @@ def main() -> None:
             query = f"armSkuName eq 'Standard_{sku}' and priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
 
             if not non_spot:
-                query += " and contains(meterName, 'Spot')"
+                query += SPOT_FILTER_CLAUSE
 
             # Add region filter if specified
             if args.region:
@@ -930,7 +925,7 @@ def main() -> None:
             json_data = fetch_pricing_data(api_url, {"$filter": query}, session, verbose=args.verbose)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
 
-            next_page: str = json_data.get("NextPageLink", "")
+            next_page = json_data.get("NextPageLink", "")
             page_count = 1
 
             # Follow pagination
