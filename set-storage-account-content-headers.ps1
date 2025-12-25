@@ -4,6 +4,8 @@
 #
 # Requires: PowerShell 7.5 or later (run with pwsh)
 
+# PSScriptAnalyzer suppressions for interactive console script
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingWriteHost', '', Justification='Interactive console script requires colored output')]
 param(
     [Parameter(Mandatory = $false, ParameterSetName = 'Key')]
     [string]$StorageAccountName,
@@ -24,7 +26,10 @@ param(
     [string]$CacheControl,
 
     [Parameter(Mandatory = $false)]
-    [string]$ContentType
+    [string]$ContentType,
+
+    [Parameter(Mandatory = $false)]
+    [string]$LocalFilePath
 )
 
 # PowerShell version check
@@ -37,8 +42,13 @@ if ($PSVersionTable.PSVersion.Major -lt 7 -or
     exit 1
 }
 
-if (-not $CacheControl -and -not $ContentType) {
-    Write-Error "At least one header (CacheControl or ContentType) must be specified."
+if (-not $CacheControl -and -not $ContentType -and -not $LocalFilePath) {
+    Write-Error "At least one of CacheControl, ContentType, or LocalFilePath must be specified."
+    exit 1
+}
+
+if ($LocalFilePath -and -not (Test-Path -Path $LocalFilePath -PathType Leaf)) {
+    Write-Error "LocalFilePath '$LocalFilePath' does not exist or is not a file."
     exit 1
 }
 
@@ -85,11 +95,22 @@ Example required: sp=rwl (read, write, list)."
         exit 1
     }
 
-    $requiredPermissions = @('l') # 'l' is required for listing blobs
+    # Build required permissions list based on operation
+    $requiredPermissions = @()
+    if ($LocalFilePath) {
+        # Upload requires write and create permissions
+        $requiredPermissions += 'w'
+        $requiredPermissions += 'c'
+    } else {
+        # Listing blobs requires list permission
+        $requiredPermissions += 'l'
+    }
+
     $missingPermissions = $requiredPermissions | Where-Object { $sasParams['sp'] -notlike "*$_*" }
     if ($missingPermissions) {
+        $permissionDesc = if ($LocalFilePath) { "upload files" } else { "list blobs" }
         Write-Error "Your SAS token is missing the following required permissions: $($missingPermissions -join ', ')`n
-To list blobs, your SAS token must include 'l' (list) permission. Please regenerate your SAS token with the correct permissions.`n
+To $permissionDesc, your SAS token must include these permissions. Please regenerate your SAS token with the correct permissions.`n
 Current permissions: $($sasParams['sp'])"
         exit 1
     }
@@ -102,25 +123,65 @@ if ($StorageAccountKey) {
     $ctx = New-AzStorageContext -StorageAccountName $StorageAccountName -SasToken $SASToken
 }
 
-# Get blobs from $web container, optionally filter by FileName or mask
-if ($FileName) {
-    $blobs = Get-AzStorageBlob -Container '$web' -Context $ctx | Where-Object { $_.Name -like $FileName }
+# Upload local file if specified
+if ($LocalFilePath) {
+    # Determine blob name: use FileName if specified, otherwise use local file name
+    if ($FileName) {
+        $blobName = $FileName
+    } else {
+        $blobName = Split-Path -Path $LocalFilePath -Leaf
+    }
+
+    Write-Host "Uploading '$LocalFilePath' to blob '$blobName'..."
+
+    # Build upload parameters
+    $uploadParams = @{
+        File      = $LocalFilePath
+        Container = '$web'
+        Blob      = $blobName
+        Context   = $ctx
+        Force     = $true  # Overwrite existing blob
+    }
+
+    # Set content type during upload if specified
+    if ($ContentType) {
+        $uploadParams['Properties'] = @{ ContentType = $ContentType }
+    }
+
+    $uploadedBlob = Set-AzStorageBlobContent @uploadParams
+    Write-Host "Uploaded blob: $blobName"
+
+    # If headers need to be set after upload
+    if ($CacheControl -or $ContentType) {
+        $cloudBlob = $uploadedBlob.ICloudBlob
+        $cloudBlob.FetchAttributes()
+        if ($CacheControl) { $cloudBlob.Properties.CacheControl = $CacheControl }
+        if ($ContentType)  { $cloudBlob.Properties.ContentType  = $ContentType  }
+        $cloudBlob.SetProperties()
+        Write-Host "Updated headers for blob: $blobName"
+    }
 } else {
-    $blobs = Get-AzStorageBlob -Container '$web' -Context $ctx
-}
+    # Original behavior: update headers on existing blobs
+    # Get blobs from $web container, optionally filter by FileName or mask
+    if ($FileName) {
+        $blobs = Get-AzStorageBlob -Container '$web' -Context $ctx | Where-Object { $_.Name -like $FileName }
+    } else {
+        $blobs = Get-AzStorageBlob -Container '$web' -Context $ctx
+    }
 
-if (-not $blobs) {
-    Write-Host "No blobs found matching the specified criteria."
-    exit 0
-}
+    if (-not $blobs) {
+        Write-Host "No blobs found matching the specified criteria."
+        exit 0
+    }
 
-foreach ($blob in $blobs) {
-    $cloudBlob = $blob.ICloudBlob
-    $cloudBlob.FetchAttributes() # Ensure all properties are loaded
+    foreach ($blob in $blobs) {
+        $cloudBlob = $blob.ICloudBlob
+        $cloudBlob.FetchAttributes() # Ensure all properties are loaded
 
-    if ($CacheControl) { $cloudBlob.Properties.CacheControl = $CacheControl }
-    if ($ContentType)  { $cloudBlob.Properties.ContentType  = $ContentType  }
+        if ($CacheControl) { $cloudBlob.Properties.CacheControl = $CacheControl }
+        if ($ContentType)  { $cloudBlob.Properties.ContentType  = $ContentType  }
 
-    $cloudBlob.SetProperties()
-    Write-Host "Updated headers for blob: $($blob.Name)"
+        $cloudBlob.SetProperties()
+        Write-Host "Updated headers for blob: $($blob.Name)"
+    }
 }

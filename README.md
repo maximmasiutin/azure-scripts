@@ -134,9 +134,21 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Clean Logs**: Automatically suppresses Azure PowerShell breaking change warnings to reduce noise.
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
 
-7. **set-storage-account-content-headers.ps1**: Static website optimization
+7. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
+   - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
+   - Usage:
+     ```powershell
+     # Set headers on existing blobs
+     pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -CacheControl "public, max-age=432000"
+
+     # Upload file and set headers
+     pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html" -CacheControl "public, max-age=432000" -ContentType "text/html; charset=utf-8"
+
+     # Upload only (no header changes)
+     pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html"
+     ```
 
 8. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
    - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
