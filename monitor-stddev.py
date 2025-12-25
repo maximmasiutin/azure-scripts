@@ -65,8 +65,8 @@ def export_data(data: List[Dict[str, Union[str, int]]], filename: str, format_ty
             if not data:
                 # Create an empty file with standard headers
                 with open(filename, 'w', encoding='utf-8', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['timestamp', 'healthy'])
+                    csv_writer = csv.writer(f)
+                    csv_writer.writerow(['timestamp', 'healthy'])
             else:
                 # Collect all unique keys to handle potentially inconsistent records
                 all_keys: set[str] = set()
@@ -75,9 +75,9 @@ def export_data(data: List[Dict[str, Union[str, int]]], filename: str, format_ty
                 fieldnames: List[str] = sorted(list(all_keys))
 
                 with open(filename, 'w', encoding='utf-8', newline='') as f:
-                    writer = csv.DictWriter(f, fieldnames=fieldnames)
-                    writer.writeheader()
-                    writer.writerows(data)
+                    dict_writer = csv.DictWriter(f, fieldnames=fieldnames)
+                    dict_writer.writeheader()
+                    dict_writer.writerows(data)
 
         print(f"Successfully exported data to {filename}")
 
@@ -102,6 +102,7 @@ class DataStorage(ABC):
     @abstractmethod
     def print_raw_entities(self) -> None:
         pass
+
 
 class JsonFileStorage(DataStorage):
     def __init__(self, filename: str, debug_output: bool) -> None:
@@ -195,6 +196,7 @@ class CosmosDBTableStorage(DataStorage):
             print(f"Total entities: {len(entities)}")
         except Exception as e:
             print(f"Error printing Cosmos DB entities: {e}", file=stderr)
+
 
 class ResultsSaver(ABC):
     @abstractmethod
@@ -325,17 +327,6 @@ class AzureBlobSaver(ResultsSaver):
             print(f"Error uploading last error JSON to Azure: {e}", file=stderr)
 
 
-def load_json(file_name: str) -> List[Dict[str, Union[str, int]]]:
-    """Load JSON data from file."""
-    try:
-        with open(file_name, 'r', encoding='utf-8') as file:
-            data = load(file)
-        return data if isinstance(data, list) else []
-    except Exception as e:
-        print(f"Error loading JSON file {file_name}: {e}", file=stderr)
-        return []
-
-
 def save_json(file_name: str, data: List[Dict[str, Union[str, int]]]) -> None:
     """Save JSON data to file."""
     try:
@@ -343,6 +334,7 @@ def save_json(file_name: str, data: List[Dict[str, Union[str, int]]]) -> None:
             dump(data, file, indent=4)
     except Exception as e:
         print(f"Error saving JSON file {file_name}: {e}", file=stderr)
+
 
 def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[str, int]]]:
     """
@@ -359,7 +351,7 @@ def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[st
         for entry in data_sorted:
             try:
                 current_timestamp = datetime.fromisoformat(str(entry['timestamp']))
-                if (not last_timestamp) or (not ((current_timestamp - last_timestamp).total_seconds() < 59.99)):
+                if not last_timestamp or (current_timestamp - last_timestamp).total_seconds() >= 59.99:
                     filtered_data.append(entry)
                 last_timestamp = current_timestamp
             except (ValueError, KeyError) as e:
@@ -382,7 +374,7 @@ def create_graphical_representation(data_sorted: List[Dict[str, Union[str, int]]
     try:
         img: Image.Image = Image.new('P', (width, height))
         palette = [
-            128, 128, 128, # Gray
+            128, 128, 128,  # Gray
             0,   255, 0,   # Green
             255, 0,   0,   # Red
             0,   0,   0,   # Black
@@ -469,6 +461,7 @@ def render_history_to_png_file(data_sorted: List[Dict[str, Union[str, int]]], fi
     except Exception as e:
         print(f"Error saving PNG file {filename_output_png}: {e}", file=stderr)
 
+
 def build_request_headers(user_agent: Optional[str], authorization: Optional[str]) -> Dict[str, str]:
     headers: Dict[str, str] = {}
     if user_agent:
@@ -480,6 +473,7 @@ def build_request_headers(user_agent: Optional[str], authorization: Optional[str
     if authorization:
         headers['Authorization'] = authorization
     return headers
+
 
 def monitor_website(
     url: str,
@@ -539,10 +533,12 @@ def monitor_website(
             probe_timestamp_dt: datetime = datetime.now(timezone.utc)
 
             try:
+                # Use tuple timeout (connect_timeout, read_timeout) for curl_cffi compatibility
+                timeout_tuple = (request_timeout, request_timeout)
                 if session:
-                    response: Response = session.get(url, timeout=request_timeout)
+                    response: Response = session.get(url, timeout=timeout_tuple)
                 else:
-                    response = cffi_requests.get(url, timeout=request_timeout, headers=headers, impersonate=browser_impersonate)
+                    response = cffi_requests.get(url, timeout=timeout_tuple, headers=headers, impersonate=browser_impersonate)
                 response_status_code = response.status_code
                 probe_end_time = time()
                 if response_status_code == 200:
@@ -745,12 +741,14 @@ def monitor_website(
         if session:
             session.close()
 
+
 def append_health_metric(storage: DataStorage, probe_timestamp_dt: datetime, health_status: int, debug_output: bool) -> None:
     current_timestamp_str = probe_timestamp_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     metric_record: Dict[str, Union[str, int]] = {"timestamp": current_timestamp_str, "healthy": health_status}
     storage.append_metric(metric_record, debug_output=debug_output)
 
-def handle_sigterm(signum: int, frame: Optional[FrameType]) -> None:
+
+def handle_sigterm(_signum: int, _frame: Optional[FrameType]) -> None:
     """Handle SIGTERM signal for graceful script exit."""
     print('\nMonitoring stopped by service signal (SIGTERM).')
     sys.exit(0)
@@ -777,10 +775,12 @@ def test_url(
 
     try:
         start_time = time()
+        # Use tuple timeout (connect_timeout, read_timeout) for curl_cffi compatibility
+        timeout_tuple = (request_timeout, request_timeout)
         if session:
-            response: Response = session.get(url, timeout=request_timeout)
+            response: Response = session.get(url, timeout=timeout_tuple)
         else:
-            response = cffi_requests.get(url, timeout=request_timeout, headers=headers, impersonate=browser_impersonate)
+            response = cffi_requests.get(url, timeout=timeout_tuple, headers=headers, impersonate=browser_impersonate)
         latency = time() - start_time
 
         print(f"Status: {response.status_code}")
@@ -848,6 +848,7 @@ def test_url(
     finally:
         if session:
             session.close()
+
 
 def main() -> None:
     signal.signal(signal.SIGTERM, handle_sigterm)
