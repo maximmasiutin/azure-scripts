@@ -352,6 +352,43 @@ ssh azureuser@10.0.0.6  # worker2 private IP
 - 5 regions x $33/month = $165/month (may exceed individual IP costs)
 - Jumpbox becomes single point of entry (consider availability)
 
+### Security Type Conflicts (PropertyChangeNotAllowed)
+
+When VM creation fails partway through, Azure may leave orphaned OS disks that retain their security type setting (TrustedLaunch or Standard). If a subsequent VM creation attempts to use the same disk name with a different security type, you'll see:
+
+```
+PropertyChangeNotAllowed: Changing property 'securityProfile.securityType' is not allowed.
+```
+
+**Common Scenarios:**
+- ARM VMs (D*p*_v5, D*p*_v6) require Standard security type, but a previous x64 VM attempt created a disk with TrustedLaunch
+- Switching between x64 and ARM VM sizes in the same resource group
+- Retry after TrustedLaunch failure leaves orphaned disk
+
+**Automatic Handling (create-spot-vms.ps1):**
+
+The script handles this automatically in three ways:
+1. **Pre-creation cleanup**: Checks for and deletes orphaned OS disks before VM creation
+2. **Error detection + retry**: Detects the specific error, cleans up the disk, and retries
+3. **TrustedLaunch fallback**: When TrustedLaunch fails, cleans disk and retries with Standard
+
+**Manual Cleanup:**
+```powershell
+# List orphaned OS disks
+Get-AzDisk -ResourceGroupName "MyRG" | Where-Object { $_.ManagedBy -eq $null }
+
+# Delete specific orphaned disk
+Remove-AzDisk -ResourceGroupName "MyRG" -DiskName "myvm-osdisk" -Force
+
+# Delete entire resource group (cleanest approach for spot VMs)
+Remove-AzResourceGroup -Name "MyRG" -Force
+```
+
+**Security Type Rules:**
+- **ARM VMs** (D*p*_v5, D*p*_v6): Always use Standard (TrustedLaunch not supported)
+- **x64 VMs**: Default to TrustedLaunch, auto-fallback to Standard if unsupported
+- **-TrustedLaunchOnly switch**: Fail instead of falling back (for strict security requirements)
+
 ### Azure Preview Features (Feature Flags)
 
 Some newer VM series (like AMD v7 Turin) require Azure feature flag registration before use. If you see errors like "not available to the current subscription" with "feature flags registered", the VM size is in preview.
