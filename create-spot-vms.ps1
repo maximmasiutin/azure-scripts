@@ -1205,6 +1205,15 @@ foreach ($vmN in $vmNames) {
          continue
     }
 
+    # Clean up orphaned OS disk from previous failed creation (prevents securityProfile conflict)
+    $osDiskName = "$vmN-osdisk"
+    $existingDisk = Get-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -ErrorAction SilentlyContinue
+    if ($existingDisk) {
+        Write-Log "Deleting orphaned OS disk: $osDiskName (prevents security type conflict)" "WARN"
+        Remove-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 5
+    }
+
     # Create VM
     try {
         $vmParams = @{
@@ -1314,6 +1323,46 @@ foreach ($vmN in $vmNames) {
             Write-Log "This VM size is in limited preview - register via Azure Portal or contact support" "WARN"
         }
 
+        # Check if securityProfile.securityType conflict (orphaned disk with different security type)
+        if ($errorMsg -match "PropertyChangeNotAllowed" -and $errorMsg -match "securityProfile\.securityType") {
+            Write-Log "Security type conflict detected - orphaned disk has different security type" "WARN"
+            try {
+                # Delete the orphaned OS disk and retry
+                $existingDisk = Get-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -ErrorAction SilentlyContinue
+                if ($existingDisk) {
+                    Write-Log "Deleting conflicting OS disk: $vmN-osdisk" "WARN"
+                    Remove-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -Force -ErrorAction Stop
+                    Start-Sleep -Seconds 5
+                    Write-Log "Retrying VM creation after disk cleanup..." "INFO"
+
+                    # Retry VM creation with original config
+                    $vm = New-AzVM @vmParams
+                    Write-Log "VM created on retry after disk cleanup: $vmN" "SUCCESS"
+
+                    # Get public IP for the successfully created VM
+                    if (-not $NoPublicIP -and $pipName) {
+                        try {
+                            $publicIpObj = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+                            $resultEntry.PublicIP = $publicIpObj.IpAddress
+                            Write-Log "Public IP: $($resultEntry.PublicIP)"
+                        } catch {
+                            Write-Log "Failed to retrieve Public IP: $($_.Exception.Message)" "WARN"
+                        }
+                    }
+
+                    # Update result entry to success
+                    $resultEntry.Success = $true
+                    $resultEntry.Remove('Error')
+                    $resultEntry.DiskCleanupRetry = $true
+                    $resultEntry.AdminPassword = $generatedPassword
+                }
+            } catch {
+                $retryError = $_.Exception.Message
+                Write-Log "Retry after disk cleanup also failed: $retryError" "ERROR"
+                $resultEntry.RetryError = $retryError
+            }
+        }
+
         # Check if TrustedLaunch error - retry with Standard security type (unless TrustedLaunchOnly)
         if ($errorMsg -match "TrustedLaunch" -and $errorMsg -match "not supported") {
             if ($TrustedLaunchOnly) {
@@ -1322,6 +1371,14 @@ foreach ($vmN in $vmNames) {
             } else {
                 Write-Log "TrustedLaunch not supported for $VMSize, retrying with Standard security type..." "WARN"
                 try {
+                    # Delete orphaned OS disk from failed attempt (prevents security type conflict)
+                    $existingDisk = Get-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -ErrorAction SilentlyContinue
+                    if ($existingDisk) {
+                        Write-Log "Deleting orphaned OS disk before retry: $vmN-osdisk" "WARN"
+                        Remove-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -Force -ErrorAction SilentlyContinue
+                        Start-Sleep -Seconds 5
+                    }
+
                     # Rebuild VM config with Standard security type
                     $vmConfigRetry = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
                     $vmConfigRetry = Set-AzVMSecurityProfile -VM $vmConfigRetry -SecurityType "Standard"
