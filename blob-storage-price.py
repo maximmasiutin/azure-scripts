@@ -44,7 +44,7 @@ class AzurePricesFetcher:
             total=self.max_retries,
             backoff_factor=1,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["GET"]
+            allowed_methods=["GET"],
         )
         adapter = HTTPAdapter(max_retries=retry_strategy)
         session.mount("https://", adapter)
@@ -53,15 +53,19 @@ class AzurePricesFetcher:
         session.verify = True
 
         # Set secure headers
-        session.headers.update({
-            'User-Agent': 'azure-blob-storage-price-tool/2.0.0',
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip, deflate'
-        })
+        session.headers.update(
+            {
+                "User-Agent": "azure-blob-storage-price-tool/2.0.0",
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+            }
+        )
 
         return session
 
-    def fetch_azure_prices(self, params: Optional[Dict[str, str]]) -> List[Dict[str, Any]]:
+    def fetch_azure_prices(
+        self, params: Optional[Dict[str, str]]
+    ) -> List[Dict[str, Any]]:
         """
         Fetch Azure retail prices from the API with proper error handling and security.
 
@@ -90,7 +94,7 @@ class AzurePricesFetcher:
                         api_url,
                         params=params,
                         timeout=self.timeout,
-                        allow_redirects=True
+                        allow_redirects=True,
                     )
                     response.raise_for_status()  # Raise exception for bad status codes
 
@@ -98,7 +102,10 @@ class AzurePricesFetcher:
                     print(f"SSL verification failed: {e}", file=sys.stderr)
                     sys.exit(1)
                 except requests.exceptions.Timeout as e:
-                    print(f"Request timed out after {self.timeout} seconds: {e}", file=sys.stderr)
+                    print(
+                        f"Request timed out after {self.timeout} seconds: {e}",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
                 except requests.exceptions.ConnectionError as e:
                     print(f"Connection error: {e}", file=sys.stderr)
@@ -106,15 +113,18 @@ class AzurePricesFetcher:
                 except requests.exceptions.HTTPError as e:
                     print(f"HTTP error {response.status_code}: {e}", file=sys.stderr)
                     if response.status_code == 429:
-                        print("Rate limit exceeded. Please wait and try again later.", file=sys.stderr)
+                        print(
+                            "Rate limit exceeded. Please wait and try again later.",
+                            file=sys.stderr,
+                        )
                     sys.exit(1)
                 except requests.exceptions.RequestException as e:
                     print(f"Request failed: {e}", file=sys.stderr)
                     sys.exit(1)
 
                 # Validate content type
-                content_type = response.headers.get('content-type', '')
-                if 'application/json' not in content_type.lower():
+                content_type = response.headers.get("content-type", "")
+                if "application/json" not in content_type.lower():
                     print(f"Unexpected content type: {content_type}", file=sys.stderr)
                     sys.exit(1)
 
@@ -126,12 +136,17 @@ class AzurePricesFetcher:
 
                 # Validate response structure
                 if not isinstance(data, dict):
-                    print("Invalid response format: expected JSON object", file=sys.stderr)
+                    print(
+                        "Invalid response format: expected JSON object", file=sys.stderr
+                    )
                     sys.exit(1)
 
                 current_items = data.get("Items", [])
                 if not isinstance(current_items, list):
-                    print("Invalid response format: Items should be a list", file=sys.stderr)
+                    print(
+                        "Invalid response format: Items should be a list",
+                        file=sys.stderr,
+                    )
                     sys.exit(1)
 
                 items.extend(current_items)
@@ -142,8 +157,14 @@ class AzurePricesFetcher:
                     # Validate next page URL for security
                     try:
                         parsed_url = urlparse(next_page)
-                        if parsed_url.scheme != 'https' or 'prices.azure.com' not in parsed_url.netloc:
-                            print(f"Suspicious next page URL: {next_page}", file=sys.stderr)
+                        if (
+                            parsed_url.scheme != "https"
+                            or "prices.azure.com" not in parsed_url.netloc
+                        ):
+                            print(
+                                f"Suspicious next page URL: {next_page}",
+                                file=sys.stderr,
+                            )
                             sys.exit(1)
                     except Exception as e:
                         print(f"Failed to parse next page URL: {e}", file=sys.stderr)
@@ -158,7 +179,10 @@ class AzurePricesFetcher:
                 time.sleep(0.1)
 
             if request_count >= max_requests:
-                print(f"Warning: Stopped after {max_requests} requests to prevent infinite loop", file=sys.stderr)
+                print(
+                    f"Warning: Stopped after {max_requests} requests to prevent infinite loop",
+                    file=sys.stderr,
+                )
 
         except KeyboardInterrupt:
             print("\nOperation cancelled by user", file=sys.stderr)
@@ -191,7 +215,9 @@ def validate_blob_types(blob_types_str: str) -> List[str]:
     validated_types = []
 
     # Define allowed characters for blob type names (security measure)
-    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-.")
+    allowed_chars = set(
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-."
+    )
 
     for blob_type in blob_types:
         if not blob_type:
@@ -204,7 +230,9 @@ def validate_blob_types(blob_types_str: str) -> List[str]:
 
         # Validate characters
         if not set(blob_type).issubset(allowed_chars):
-            print(f"Error: Invalid characters in blob type: {blob_type}", file=sys.stderr)
+            print(
+                f"Error: Invalid characters in blob type: {blob_type}", file=sys.stderr
+            )
             sys.exit(1)
 
         validated_types.append(blob_type)
@@ -240,14 +268,14 @@ Security Notes:
   - Input validation prevents injection attacks
   - Rate limiting is respected automatically
         """,
-        formatter_class=RawDescriptionHelpFormatter
+        formatter_class=RawDescriptionHelpFormatter,
     )
 
     parser.add_argument(
         "--blob-types",
         default=",".join(default_blob_types),
         help="Comma-separated list of blob types (default: %(default)s)",
-        metavar="TYPES"
+        metavar="TYPES",
     )
 
     parser.add_argument(
@@ -255,7 +283,7 @@ Security Notes:
         type=int,
         default=30,
         help="HTTP request timeout in seconds (default: %(default)s)",
-        metavar="SECONDS"
+        metavar="SECONDS",
     )
 
     parser.add_argument(
@@ -263,21 +291,17 @@ Security Notes:
         type=int,
         default=3,
         help="Maximum number of retry attempts (default: %(default)s)",
-        metavar="COUNT"
+        metavar="COUNT",
     )
 
     parser.add_argument(
         "--output-format",
         choices=["table", "json", "csv"],
         default="table",
-        help="Output format (default: %(default)s)"
+        help="Output format (default: %(default)s)",
     )
 
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output"
-    )
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
 
     args = parser.parse_args()
 
@@ -298,7 +322,9 @@ Security Notes:
     try:
         # Escape single quotes in blob type names for the filter
         escaped_types = [blob_type.replace("'", "''") for blob_type in blob_types]
-        product_filter = " or ".join(f"productName eq '{blob_type}'" for blob_type in escaped_types)
+        product_filter = " or ".join(
+            f"productName eq '{blob_type}'" for blob_type in escaped_types
+        )
         params = {
             "$filter": f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
         }
@@ -327,7 +353,10 @@ def process_items(items: List[Dict[str, Any]], verbose: bool = False) -> Tuple[
             # Validate item structure
             if not isinstance(item, dict):
                 if verbose:
-                    print(f"Warning: Item {i} is not a dictionary, skipping", file=sys.stderr)
+                    print(
+                        f"Warning: Item {i} is not a dictionary, skipping",
+                        file=sys.stderr,
+                    )
                 invalid_items += 1
                 continue
 
@@ -342,12 +371,17 @@ def process_items(items: List[Dict[str, Any]], verbose: bool = False) -> Tuple[
                 retail_price = float(item.get("retailPrice", 0.0))
                 if retail_price < 0:
                     if verbose:
-                        print(f"Warning: Negative price in item {i}, skipping", file=sys.stderr)
+                        print(
+                            f"Warning: Negative price in item {i}, skipping",
+                            file=sys.stderr,
+                        )
                     invalid_items += 1
                     continue
             except (ValueError, TypeError):
                 if verbose:
-                    print(f"Warning: Invalid price in item {i}, skipping", file=sys.stderr)
+                    print(
+                        f"Warning: Invalid price in item {i}, skipping", file=sys.stderr
+                    )
                 invalid_items += 1
                 continue
 
@@ -359,7 +393,10 @@ def process_items(items: List[Dict[str, Any]], verbose: bool = False) -> Tuple[
             # Validate field lengths and content
             if len(product_name) > 200 or len(sku_name) > 100 or len(meter_name) > 200:
                 if verbose:
-                    print(f"Warning: Field too long in item {i}, skipping", file=sys.stderr)
+                    print(
+                        f"Warning: Field too long in item {i}, skipping",
+                        file=sys.stderr,
+                    )
                 invalid_items += 1
                 continue
 
@@ -376,7 +413,10 @@ def process_items(items: List[Dict[str, Any]], verbose: bool = False) -> Tuple[
             continue
 
     if verbose and invalid_items > 0:
-        print(f"Processed {len(items)} items, {invalid_items} invalid items skipped", file=sys.stderr)
+        print(
+            f"Processed {len(items)} items, {invalid_items} invalid items skipped",
+            file=sys.stderr,
+        )
 
     return service_regions, service_prices, all_regions, excluded_regions
 
@@ -398,7 +438,9 @@ def calculate_region_prices(
     return region_prices
 
 
-def calculate_average_prices(region_prices: Dict[str, List[float]]) -> List[Tuple[str, float]]:
+def calculate_average_prices(
+    region_prices: Dict[str, List[float]]
+) -> List[Tuple[str, float]]:
     """Calculate average prices for each region."""
     region_avg_prices = []
 
@@ -414,7 +456,7 @@ def format_output(
     blob_types: List[str],
     region_avg_prices: List[Tuple[str, float]],
     excluded_regions: Set[str],
-    output_format: str
+    output_format: str,
 ) -> None:
     """Format and print the results in the specified format."""
 
@@ -422,8 +464,11 @@ def format_output(
         # JSON output
         result = {
             "blob_types": blob_types,
-            "region_prices": [{"region": region, "avg_price": price} for region, price in region_avg_prices],
-            "excluded_regions": list(excluded_regions)
+            "region_prices": [
+                {"region": region, "avg_price": price}
+                for region, price in region_avg_prices
+            ],
+            "excluded_regions": list(excluded_regions),
         }
         print(json.dumps(result, indent=2))
 
@@ -449,14 +494,19 @@ def format_output(
         )
         print("\n" + table_caption)
         headers = ["Region", "Average Price (USD)"]
-        formatted_data = [(region, f"{price:.6f}") for region, price in region_avg_prices]
+        formatted_data = [
+            (region, f"{price:.6f}") for region, price in region_avg_prices
+        ]
         print(tabulate(formatted_data, headers=headers, tablefmt="psql"))
 
 
 def main() -> None:
     """Main function with comprehensive error handling."""
     try:
-        print("Requesting Azure blob storage price data, please stand by...", file=sys.stderr)
+        print(
+            "Requesting Azure blob storage price data, please stand by...",
+            file=sys.stderr,
+        )
 
         blob_types, params, args = parse_arguments()
 
@@ -477,11 +527,16 @@ def main() -> None:
         )
 
         if args.verbose:
-            print(f"Total regions found (excluding 'Global'): {len(all_regions)}", file=sys.stderr)
+            print(
+                f"Total regions found (excluding 'Global'): {len(all_regions)}",
+                file=sys.stderr,
+            )
             print(f"Total services found: {len(service_regions)}", file=sys.stderr)
 
         # Calculate prices
-        region_prices = calculate_region_prices(service_regions, service_prices, all_regions)
+        region_prices = calculate_region_prices(
+            service_regions, service_prices, all_regions
+        )
         region_avg_prices = calculate_average_prices(region_prices)
 
         if not region_avg_prices:
@@ -489,15 +544,18 @@ def main() -> None:
             sys.exit(1)
 
         # Output results
-        format_output(blob_types, region_avg_prices, excluded_regions, args.output_format)
+        format_output(
+            blob_types, region_avg_prices, excluded_regions, args.output_format
+        )
 
     except KeyboardInterrupt:
         print("\nOperation cancelled by user", file=sys.stderr)
         sys.exit(130)
     except Exception as e:
         print(f"Unexpected error: {e}", file=sys.stderr)
-        if args.verbose if 'args' in locals() else False:
+        if args.verbose if "args" in locals() else False:
             import traceback
+
             traceback.print_exc(file=sys.stderr)
         sys.exit(1)
 
