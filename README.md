@@ -3,9 +3,10 @@
 1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
 1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison and per-core pricing analysis. Examples of use:
-  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"`
-  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region`
-  `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region`  
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (1 page)
+  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region` (4 pages)
+  `python vm-spot-price.py --cpu 64 --no-burstable --region eastus` (~4 pages)
+  `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region` (~130 pages)  
 1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
   `python blob-storage-price.py`  
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
@@ -32,30 +33,40 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
    - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format; `--return-region-json` outputs JSON for direct parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
+   - **API Efficiency**: Different query modes use different numbers of API pages:
+     - SKU pattern mode: 1 page per SKU (fastest)
+     - Multi-VM mode (`--vm-sizes`): 1 page per VM size
+     - Multi-query mode (`--series`, `--latest`): 1 page per series
+     - Single-query mode (`--no-burstable`, `--general-compute`): ~4 pages/region, ~130 pages all regions
+     - Use `--region` to reduce pages from ~130 to ~4
    - Examples:
      ```bash
-     # Single SKU pattern
+     # Single SKU pattern (1 page)
      python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
      python vm-spot-price.py --sku-pattern "B4ls_v2" --series-pattern "Bsv2" --return-region
 
-     # Multi-VM comparison (find cheapest across multiple sizes)
+     # Multi-VM comparison (1 page per VM size)
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region
 
-     # Per-core pricing (find cheapest $/core across all D and F series)
-     python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute
-     python vm-spot-price.py --min-cores 4 --max-cores 32 --latest --return-region
-     python vm-spot-price.py --min-cores 2 --max-cores 16 --series "Dasv6,Fasv7"
+     # Per-core pricing - single query mode (~4 pages with --region, ~130 without)
+     python vm-spot-price.py --cpu 64 --no-burstable --region eastus        # ~4 pages
+     python vm-spot-price.py --cpu 64 --no-burstable                        # ~130 pages
+     python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute # ~130 pages
+
+     # Per-core pricing - multi-query mode (1 page per series)
+     python vm-spot-price.py --min-cores 4 --max-cores 32 --latest --return-region  # 29 series
+     python vm-spot-price.py --min-cores 2 --max-cores 16 --series "Dasv6,Fasv7"    # 2 series
 
      # Per-core filtering options
-     # --general-compute: Only D-series (general purpose) and F-series (compute optimized)
-     # --latest: Only latest generation (v6/v7) - AMD Genoa/Turin, ARM Cobalt
-     # --no-burstable: Exclude B-series burstable VMs
-     # --burstable-only: Only B-series burstable VMs
-     # --series: Comma-separated list of specific VM series
+     # --general-compute: Only D+F series, single query (~4 pages/region)
+     # --latest: Only v6/v7 series, multi-query (1 page per 29 series)
+     # --no-burstable: Exclude B-series, single query (~4 pages/region)
+     # --burstable-only: Only B-series, single query (~4 pages/region)
+     # --series: Specific series list, multi-query (1 page per series)
 
      # ARM-based VMs (Ampere Altra processors) - automatic detection
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ARM VMs work natively
-     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm  # Exclude ARM VMs from results
+     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm     # Exclude ARM VMs
 
      # Exclude specific regions or VM sizes
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
@@ -188,18 +199,24 @@ Note: `curl_cffi` replaces `requests` for browser-like TLS fingerprinting (avoid
 
 ## Quick Start Examples
 
-**Find cheapest region for a specific VM:**
+**Find cheapest region for a specific VM (1 page):**
 ```bash
 python vm-spot-price.py --sku-pattern "B4ls_v2" --return-region
 ```
 
-**Find cheapest spot option across multiple VM sizes:**
+**Find cheapest spot option across multiple VM sizes (1 page per VM):**
 ```bash
 python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
 # Output: centralindia Standard_D4as_v5
 ```
 
-**Find cheapest spot price per core (2-64 vCPUs, D and F series):**
+**Find cheapest spot price per core - fast with region filter (~4 pages):**
+```bash
+python vm-spot-price.py --cpu 64 --no-burstable --region eastus --return-region
+# Output: eastus Standard_D64pls_v6 0.3849 1 Hour
+```
+
+**Find cheapest spot price per core - all regions (~130 pages):**
 ```bash
 python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
 # Output: newzealandnorth Standard_F32ams_v6 0.066343 1 Hour
@@ -426,8 +443,11 @@ az provider register -n Microsoft.Compute
 
 **Workaround - Exclude Preview VMs:**
 ```bash
-# Exclude v7 series (and other preview SKUs) from price queries
+# Exclude v7 series (and other preview SKUs) from price queries (~130 pages all regions)
 python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns-file preview-vm-exclusions.txt
+
+# Faster with region filter (~4 pages)
+python vm-spot-price.py --cpu 64 --no-burstable --region eastus --exclude-sku-patterns-file preview-vm-exclusions.txt
 ```
 
 See [Microsoft Learn - Set up preview features](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/preview-features) for more details.
