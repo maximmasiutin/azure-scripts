@@ -42,15 +42,25 @@ def get_scheduled_events(max_retries=3, backoff_factor=2):
     """Get scheduled events with retry logic and better error handling."""
     for attempt in range(max_retries):
         try:
-            resp = get(metadataUrl, headers=headerValue, params=queryParams, timeout=endpointTimeout)
+            resp = get(
+                metadataUrl,
+                headers=headerValue,
+                params=queryParams,
+                timeout=endpointTimeout,
+            )
             resp.raise_for_status()
             return resp.json()
         except exceptions.RequestException as e:
             if attempt == max_retries - 1:
-                print(f"Failed to get scheduled events after {max_retries} attempts: {e}", file=stderr)
+                print(
+                    f"Failed to get scheduled events after {max_retries} attempts: {e}",
+                    file=stderr,
+                )
                 return {}
-            wait_time = backoff_factor ** attempt
-            print(f"Metadata service error (attempt {attempt + 1}), retrying in {wait_time}s: {e}")
+            wait_time = backoff_factor**attempt
+            print(
+                f"Metadata service error (attempt {attempt + 1}), retrying in {wait_time}s: {e}"
+            )
             sleep(wait_time)
     return {}
 
@@ -71,12 +81,14 @@ def validate_hook_path(hook_path):
     real_path = os.path.realpath(hook_path)
 
     # Allow hooks in safe directories
-    allowed_dirs = ['/opt/', '/usr/local/bin/', '/home/']
+    allowed_dirs = ["/opt/", "/usr/local/bin/", "/home/"]
     if not any(real_path.startswith(safe_dir) for safe_dir in allowed_dirs):
-        raise ValueError(f"Hook script must be in allowed directories {allowed_dirs}: {real_path}")
+        raise ValueError(
+            f"Hook script must be in allowed directories {allowed_dirs}: {real_path}"
+        )
 
     # Prevent directory traversal
-    if '..' in hook_path:
+    if ".." in hook_path:
         raise ValueError("Hook path cannot contain '..' (directory traversal)")
 
 
@@ -104,7 +116,9 @@ def eviction_action(a_services, a_hook):
                 print("Stopped service", service, "with systemctl")
             else:
                 # Fallback to service command
-                rc = run(["/usr/sbin/service", service, "stop"], check=False, timeout=60).returncode
+                rc = run(
+                    ["/usr/sbin/service", service, "stop"], check=False, timeout=60
+                ).returncode
                 if rc == 0:
                     print("Stopped service", service, "with service command")
                 else:
@@ -118,15 +132,29 @@ def is_valid_service_name(service_name):
     if not service_name or len(service_name) > 64:
         return False
     # Only allow alphanumeric, hyphens, underscores, and dots
-    return re.match(r'^[a-zA-Z0-9_\-\.]+$', service_name) is not None
+    return re.match(r"^[a-zA-Z0-9_\-\.]+$", service_name) is not None
 
 
 def parse_args():
     parser = ArgumentParser(description="Monitor Azure spot VM eviction events.")
-    parser.add_argument("--stop-services", type=str, help="Comma-separated list of services to stop on eviction event.")
-    parser.add_argument("--hook", type=str, help="Path to executable file to run on eviction event.")
-    parser.add_argument("--skip-azure-check", action="store_true", help="Skip the check for Azure environment.")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be done without executing.")
+    parser.add_argument(
+        "--stop-services",
+        type=str,
+        help="Comma-separated list of services to stop on eviction event.",
+    )
+    parser.add_argument(
+        "--hook", type=str, help="Path to executable file to run on eviction event."
+    )
+    parser.add_argument(
+        "--skip-azure-check",
+        action="store_true",
+        help="Skip the check for Azure environment.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be done without executing.",
+    )
     args = parser.parse_args()
 
     if not args.stop_services and not args.hook:
@@ -159,7 +187,10 @@ if __name__ == "__main__":
     if not skip_azure_check:
         s = uname().release
         if "azure" not in s.lower():
-            print(f"The release \"{s}\" does not indicate Azure! (use --skip-azure-check to avoid this check)", file=stderr)
+            print(
+                f'The release "{s}" does not indicate Azure! (use --skip-azure-check to avoid this check)',
+                file=stderr,
+            )
             exit(1)
 
     myComputer = node()
@@ -189,7 +220,9 @@ if __name__ == "__main__":
         if not payload:
             error_count += 1
             if error_count >= max_errors:
-                print(f"Too many consecutive errors ({error_count}), exiting", file=stderr)
+                print(
+                    f"Too many consecutive errors ({error_count}), exiting", file=stderr
+                )
                 exit(1)
             sleep(5)  # Wait longer on errors
             continue
