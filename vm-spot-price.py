@@ -19,6 +19,7 @@ Examples:
 
 import json
 import logging
+import os
 import re
 import sys
 import time
@@ -26,11 +27,62 @@ from argparse import ArgumentParser, Namespace
 from functools import wraps
 from json import JSONDecodeError
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 
 from requests import Response, Session, exceptions
 from requests.adapters import HTTPAdapter
 from tabulate import tabulate
 from urllib3.util.retry import Retry
+
+# Allowed API domains for SSRF protection
+ALLOWED_API_DOMAINS = ["prices.azure.com"]
+
+
+def validate_api_url(url: str) -> bool:
+    """
+    Validate that a URL is from an allowed Azure API domain.
+    Returns True if valid, False otherwise.
+    """
+    try:
+        parsed = urlparse(url)
+        # Must be HTTPS
+        if parsed.scheme != "https":
+            return False
+        # Must be from allowed domain
+        if parsed.netloc not in ALLOWED_API_DOMAINS:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def validate_file_path(file_path: str, operation: str = "write") -> str:
+    """
+    Validate file path to prevent path traversal attacks.
+    Returns the validated real path. Raises ValueError if invalid.
+    """
+    if not file_path:
+        raise ValueError(f"Empty file path for {operation}")
+
+    # Check for path traversal sequences before resolving
+    if ".." in file_path:
+        raise ValueError(f"Path traversal detected in {operation}: '..' not allowed")
+
+    # Resolve to absolute path
+    real_path = os.path.realpath(file_path)
+
+    # Verify the resolved path is within expected boundaries
+    cwd = os.path.realpath(".")
+    is_absolute_input = os.path.isabs(file_path)
+
+    # If relative path, must resolve within current directory tree
+    if not is_absolute_input:
+        if not real_path.startswith(cwd):
+            raise ValueError(
+                f"Path traversal detected in {operation}: resolved path escapes working directory"
+            )
+
+    return real_path
 
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
@@ -84,6 +136,10 @@ def fetch_pricing_data(
     api_url: str, params: Dict[str, str], session: Session, verbose: bool = False
 ) -> Dict[str, Any]:
     """Fetch pricing data with error handling and rate limiting."""
+    # Validate URL to prevent SSRF attacks
+    if not validate_api_url(api_url):
+        raise ValueError(f"Invalid or untrusted API URL: {api_url}")
+
     try:
         if verbose:
             print(f"[VERBOSE] API URL: {api_url}", file=sys.stderr)
@@ -1337,11 +1393,21 @@ def main() -> None:
 
         if args.output_file:
             try:
-                with open(args.output_file, "w", encoding="utf-8") as f:
+                # Validate file path to prevent path traversal
+                validated_path = validate_file_path(args.output_file, "output")
+                # Use basename to sanitize and break taint chain
+                safe_dir = os.path.dirname(os.path.realpath(validated_path))
+                safe_name = os.path.basename(validated_path)
+                safe_path = os.path.join(safe_dir, safe_name)
+                with open(safe_path, "w", encoding="utf-8") as f:
                     f.write(content)
-                print(f"Results saved to: {args.output_file}")
+                print(f"Results saved to: {safe_path}")
+            except ValueError as e:
+                print(f"Invalid output path: {e}", file=sys.stderr)
+                print("Results:")
+                print(content)
             except IOError as e:
-                print(f"Error writing to file {args.output_file}: {e}", file=sys.stderr)
+                print(f"Error writing to file: {e}", file=sys.stderr)
                 print("Results:")
                 print(content)
         else:
