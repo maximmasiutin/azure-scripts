@@ -21,12 +21,14 @@
 
 import os
 import re
+import shlex
 from argparse import ArgumentParser
 from os import path, access, X_OK
 from platform import uname, node
 from subprocess import run
 from sys import stderr, exit
 from time import sleep
+from urllib.parse import urlparse
 
 from requests import get, exceptions
 
@@ -68,17 +70,31 @@ def get_scheduled_events(max_retries=3, backoff_factor=2):
 def validate_hook_path(hook_path):
     """
     Validate hook script path for security.
-    Raises ValueError if invalid. Returns None if valid.
+    Raises ValueError if invalid. Returns the validated real path if valid.
     """
     if not hook_path:
-        return
+        return None
 
-    # Check if file exists and is executable
-    if not (path.exists(hook_path) and access(hook_path, X_OK)):
-        raise ValueError(f"Hook script not executable or doesn't exist: {hook_path}")
+    # Prevent directory traversal - check before resolving
+    if ".." in hook_path:
+        raise ValueError("Hook path cannot contain '..' (directory traversal)")
+
+    # Check for shell metacharacters that could be dangerous
+    dangerous_chars = [";", "&", "|", "$", "`", "(", ")", "{", "}", "<", ">", "\n", "\r"]
+    for char in dangerous_chars:
+        if char in hook_path:
+            raise ValueError(f"Hook path contains forbidden character: {repr(char)}")
 
     # Get real path to prevent symlink attacks
     real_path = os.path.realpath(hook_path)
+
+    # Check if file exists and is executable
+    if not (path.exists(real_path) and access(real_path, X_OK)):
+        raise ValueError(f"Hook script not executable or doesn't exist: {hook_path}")
+
+    # Verify the resolved path is a regular file (not a device, socket, etc.)
+    if not path.isfile(real_path):
+        raise ValueError(f"Hook path is not a regular file: {real_path}")
 
     # Allow hooks in safe directories
     allowed_dirs = ["/opt/", "/usr/local/bin/", "/home/"]
@@ -87,19 +103,22 @@ def validate_hook_path(hook_path):
             f"Hook script must be in allowed directories {allowed_dirs}: {real_path}"
         )
 
-    # Prevent directory traversal
-    if ".." in hook_path:
-        raise ValueError("Hook path cannot contain '..' (directory traversal)")
+    return real_path
 
 
 def eviction_action(a_services, a_hook):
     """Execute hook and stop services on eviction with improved security."""
     if a_hook:
         try:
-            validate_hook_path(a_hook)
-            print("Executing hook:", a_hook)
-            # Use array form to prevent shell injection
-            rc = run([a_hook], check=False, timeout=300).returncode
+            # Validate and get the real (resolved) path
+            validated_path = validate_hook_path(a_hook)
+            if validated_path is None:
+                print("Hook path validation returned None")
+                return
+            print("Executing hook:", validated_path)
+            # Use array form with validated path to prevent shell injection
+            # shell=False is the default, ensuring no shell interpretation
+            rc = run([validated_path], shell=False, check=False, timeout=300).returncode
             if rc != 0:
                 print("Hook execution failed with return code", rc)
         except ValueError as e:
