@@ -1,4 +1,0 @@
-curl_cffi
-azure-storage-blob
-azure-data-tables
-Pillow
