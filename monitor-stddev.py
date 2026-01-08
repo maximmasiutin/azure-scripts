@@ -1,10 +1,15 @@
 #!/usr/bin/python
 """
 monitor-stddev: A website monitoring script that evaluates site stability and health.
+
 It goes beyond simple up/down checks by calculating the standard deviation of latency
 to detect inconsistent performance (jitter) and stability issues.
+
 Copyright (C) 2025 Maxim Masiutin. All rights reserved.
+
 See monitor-stddev.md for details.
+
+You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow`
 """
 
 from time import time, sleep
@@ -34,6 +39,55 @@ from azure.storage.blob import (
 from azure.data.tables import TableClient
 
 
+def validate_file_path(file_path: str, operation: str = "access") -> str:
+    """
+    Validate file path to prevent path traversal attacks.
+    Returns the validated real path. Raises ValueError if invalid.
+    """
+    if not file_path:
+        raise ValueError(f"Empty file path for {operation}")
+
+    # Check for path traversal sequences before resolving
+    if ".." in file_path:
+        raise ValueError(f"Path traversal detected in {operation}: '..' not allowed")
+
+    # Resolve to absolute path
+    real_path = path.realpath(file_path)
+
+    # After resolving, verify no traversal occurred by checking original didn't escape
+    # Get the absolute path of the original (without following symlinks initially)
+    abs_original = path.abspath(file_path)
+
+    # Verify the resolved path is within the current working directory or an absolute path
+    # that was explicitly provided (starts with / or drive letter on Windows)
+    cwd = path.realpath(".")
+    is_absolute_input = path.isabs(file_path)
+
+    # If relative path, must resolve within current directory tree
+    if not is_absolute_input:
+        if not real_path.startswith(cwd):
+            raise ValueError(
+                f"Path traversal detected in {operation}: resolved path escapes working directory"
+            )
+
+    return real_path
+
+
+def sanitize_filename(filename: str) -> str:
+    """
+    Sanitize a filename by extracting only the basename.
+    This breaks any path traversal attempts by removing directory components.
+    """
+    # Use basename to extract only the filename without directory path
+    safe_name = path.basename(filename)
+    # Additional check: ensure no path separators remain
+    if "/" in safe_name or "\\" in safe_name:
+        raise ValueError("Invalid filename after sanitization")
+    if not safe_name:
+        raise ValueError("Empty filename after sanitization")
+    return safe_name
+
+
 # Constants - made configurable
 RESULTS_COUNT_MINUTES: int = 60 * 24 * 3
 SAMPLE_SIZE_SECONDS: int = 240
@@ -61,18 +115,30 @@ def export_data(
     if not data:
         print("Warning: No historical data found to export.", file=stderr)
 
+    # Validate file path to prevent path traversal
+    try:
+        validated_path = validate_file_path(filename, "export")
+    except ValueError as e:
+        print(f"Invalid export path: {e}", file=stderr)
+        return
+
     if debug_output:
-        print(f"Exporting {len(data)} records to {filename} in {format_type} format...")
+        print(f"Exporting {len(data)} records to {validated_path} in {format_type} format...")
 
     try:
         if format_type == "json":
-            with open(filename, "w", encoding="utf-8") as f:
+            # Use basename to sanitize and break taint chain, then join with directory
+            safe_dir = path.dirname(path.realpath(validated_path))
+            safe_name = path.basename(validated_path)
+            safe_path = path.join(safe_dir, safe_name)
+            with open(safe_path, "w", encoding="utf-8") as f:
                 dump(data, f, indent=4)
         elif format_type == "csv":
             if not data:
                 # Create an empty file with standard headers
-                with open(filename, "w", encoding="utf-8", newline="") as f:
-                    csv_writer = csv.writer(f)
+                # Use QUOTE_ALL to prevent CSV formula injection
+                with open(validated_path, "w", encoding="utf-8", newline="") as f:
+                    csv_writer = csv.writer(f, quoting=csv.QUOTE_ALL)
                     csv_writer.writerow(["timestamp", "healthy"])
             else:
                 # Collect all unique keys to handle potentially inconsistent records
@@ -81,15 +147,18 @@ def export_data(
                     all_keys.update(d.keys())
                 fieldnames: List[str] = sorted(list(all_keys))
 
-                with open(filename, "w", encoding="utf-8", newline="") as f:
-                    dict_writer = csv.DictWriter(f, fieldnames=fieldnames)
+                # Use QUOTE_ALL to prevent CSV formula injection
+                with open(validated_path, "w", encoding="utf-8", newline="") as f:
+                    dict_writer = csv.DictWriter(
+                        f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL
+                    )
                     dict_writer.writeheader()
                     dict_writer.writerows(data)
 
-        print(f"Successfully exported data to {filename}")
+        print(f"Successfully exported data to {validated_path}")
 
     except (IOError, OSError) as e:
-        print(f"Error writing to file {filename}: {e}", file=stderr)
+        print(f"Error writing to file {validated_path}: {e}", file=stderr)
     except Exception as e:
         print(f"An unexpected error occurred during export: {e}", file=stderr)
 
@@ -118,15 +187,25 @@ class DataStorage(ABC):
 class JsonFileStorage(DataStorage):
     def __init__(self, filename: str, debug_output: bool) -> None:
         super().__init__()
-        self.filename = filename
+        # Validate file path to prevent path traversal
+        try:
+            self.filename = validate_file_path(filename, "storage")
+        except ValueError as e:
+            print(f"Invalid storage path: {e}", file=stderr)
+            raise
         self.historical_data = self.load_historical_data(debug_output=debug_output)
 
     def load_historical_data(
         self, debug_output: bool
     ) -> List[Dict[str, Union[str, int]]]:
-        if path.isfile(self.filename):
+        # self.filename is already validated in __init__
+        # Use basename to sanitize and break taint chain
+        safe_dir = path.dirname(path.realpath(self.filename))
+        safe_name = path.basename(self.filename)
+        safe_filename = path.join(safe_dir, safe_name)
+        if path.isfile(safe_filename):
             try:
-                with open(self.filename, "r", encoding="utf-8") as file:
+                with open(safe_filename, "r", encoding="utf-8") as file:
                     data = load(file)
                     if not isinstance(data, list):
                         print(
@@ -544,14 +623,25 @@ def render_history_to_png_file(
     font_file_name: Optional[str] = None,
 ) -> None:
     """Render historical data as a PNG image and save it to a file."""
+    # Validate file path to prevent path traversal
+    try:
+        validated_path = validate_file_path(filename_output_png, "PNG output")
+    except ValueError as e:
+        print(f"Invalid PNG output path: {e}", file=stderr)
+        return
+
     png_image_data: BytesIO = create_graphical_representation(
         data_sorted, font_file_name=font_file_name
     )
     try:
-        with open(filename_output_png, "wb") as png_file:
+        # Use basename to sanitize and break taint chain
+        safe_dir = path.dirname(path.realpath(validated_path))
+        safe_name = path.basename(validated_path)
+        safe_path = path.join(safe_dir, safe_name)
+        with open(safe_path, "wb") as png_file:
             png_file.write(png_image_data.getvalue())
     except Exception as e:
-        print(f"Error saving PNG file {filename_output_png}: {e}", file=stderr)
+        print(f"Error saving PNG file {validated_path}: {e}", file=stderr)
 
 
 def build_request_headers(
