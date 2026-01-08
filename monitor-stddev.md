@@ -23,6 +23,8 @@ The program periodically checks the specified website, calculates relevant stati
 - `statistics` package (standard since Python 3.4)
 - `argparse` package (standard since Python 3.2)
 
+You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow`
+
 ## Installation
 
 Install the required Python packages using `pip`:
