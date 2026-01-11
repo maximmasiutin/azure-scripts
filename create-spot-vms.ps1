@@ -81,7 +81,7 @@ param(
     [switch]$NoNSG,         # If set, skip NSG creation entirely (use with RemoveSSH in init script)
     [switch]$CleanupOrphans, # If set, delete orphaned Public IPs before VM creation
     [switch]$TrustedLaunchOnly,  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
-    [switch]$EnableAcceleratedNetworking  # If set, enable AcceleratedNetworking (MANA/FastPath) - disabled by default due to region issues
+    [switch]$DisableAcceleratedNetworking  # If set, disable AcceleratedNetworking (MANA/FastPath) - enabled by default
 )
 
 # PowerShell version check
@@ -998,10 +998,13 @@ foreach ($vmN in $vmNames) {
     if ($ForceOverwrite) { $nicParams.Force = $true }
 
     # Check if VM size supports accelerated networking
-    # AcceleratedNetworking (MANA/FastPath) - disabled by default due to region issues
-    # Enable only if explicitly requested via -EnableAcceleratedNetworking parameter
-    # For v6 VMs with MANA NICs, explicitly disable to avoid FastPath errors
-    if ($EnableAcceleratedNetworking) {
+    # AcceleratedNetworking (MANA/FastPath) - enabled by default for supported VM sizes
+    # Disable explicitly with -DisableAcceleratedNetworking if FastPath errors occur
+    if ($DisableAcceleratedNetworking) {
+        $nicParams.EnableAcceleratedNetworking = $false
+        Write-Log "AcceleratedNetworking explicitly disabled for $vmN" "INFO"
+    }
+    else {
         $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
         $supportsAccelNet = $false
         foreach ($prefix in $supportedPrefixes) {
@@ -1014,13 +1017,6 @@ foreach ($vmN in $vmNames) {
             $nicParams.EnableAcceleratedNetworking = $true
             Write-Log "AcceleratedNetworking enabled for $vmN" "INFO"
         }
-    }
-    else {
-        # Explicitly disable AcceleratedNetworking to avoid FastPath/MANA issues on v6 VMs
-        # Error: "FastPathDoesNotSupportApplicationGatewayDeployment" occurs when FastPath
-        # preview features are in Pending state or when MANA NICs default to FastPath
-        $nicParams.EnableAcceleratedNetworking = $false
-        Write-Log "AcceleratedNetworking explicitly disabled for $vmN" "INFO"
     }
 
     # Public IP (with smart retry for Azure propagation delays)
