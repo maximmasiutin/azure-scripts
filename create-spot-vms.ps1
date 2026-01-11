@@ -85,6 +85,7 @@ param(
     [string]$ImageSku,    # Auto-detected if not specified
     [string]$ImageVersion = "latest",
     [string]$StorageAccountType = "Standard_LRS",
+    [int]$OSDiskSizeGB = 32,  # Azure tier S4 (32 GiB) - same price as 30 GiB
     [string]$SecurityType = "TrustedLaunch",
     [switch]$UseLTS,      # Use LTS Ubuntu (24.04) instead of latest non-LTS (default: non-LTS)
     [switch]$PreferServer,  # Prefer server over minimal image
@@ -113,7 +114,13 @@ param(
     [switch]$CleanupOrphans, # If set, delete orphaned Public IPs before VM creation
     [switch]$TrustedLaunchOnly,  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
     [switch]$DisableAcceleratedNetworking,  # If set, disable AcceleratedNetworking (MANA/FastPath) - enabled by default
-    [switch]$CreateInfrastructureOnly  # If set, only create RG/VNet/NAT Gateway (requires -UseNatGateway), return JSON and exit
+    [switch]$CreateInfrastructureOnly,  # If set, only create RG/VNet/NAT Gateway (requires -UseNatGateway), return JSON and exit
+    [switch]$DisableDiskNetworkAccess,  # If set, disable public and private network access to OS disk (no export endpoint)
+    [switch]$MaxWritebackCache,  # If set, configure aggressive Linux write-back cache (for spot VMs where data loss is acceptable)
+
+    # Graceful deletion mode (simulates eviction)
+    [switch]$GracefulDelete,  # If set, gracefully delete VM(s) instead of creating
+    [int]$GracePeriodSeconds = 30  # Seconds to wait for VM to save state before deletion
 )
 
 # PowerShell version check
@@ -222,6 +229,108 @@ function Get-LatestUbuntuImage {
             Sku = "22_04-lts-gen2"
             IsMinimal = $false
         }
+    }
+}
+
+# Gracefully delete a VM (simulates eviction - allows VM to save state before deletion)
+function Remove-SpotVMGracefully {
+    param(
+        [Parameter(Mandatory=$true)][string]$ResourceGroupName,
+        [Parameter(Mandatory=$true)][string]$VMName,
+        [int]$GracePeriodSeconds = 30,
+        [string]$ShutdownSignal = "SIGTERM"
+    )
+
+    Write-Log "Starting graceful deletion of VM: $VMName (grace period: ${GracePeriodSeconds}s)"
+
+    # Step 1: Send shutdown signal to VM via RunCommand (triggers eviction handler)
+    try {
+        $shutdownScript = @"
+#!/bin/bash
+# Signal eviction handler to save state
+pkill -$ShutdownSignal -f monitor-eviction || true
+# Also send to any custom handlers
+if [ -f /var/run/eviction-handler.pid ]; then
+    kill -$ShutdownSignal `$(cat /var/run/eviction-handler.pid) 2>/dev/null || true
+fi
+# Sync filesystems
+sync
+echo "Shutdown signal sent, syncing filesystems..."
+"@
+        Write-Log "Sending shutdown signal to VM..."
+        $result = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $VMName `
+            -CommandId 'RunShellScript' -ScriptString $shutdownScript -ErrorAction Stop
+        Write-Log "Shutdown signal sent successfully"
+    } catch {
+        Write-Log "Warning: Could not send shutdown signal: $($_.Exception.Message)" "WARN"
+    }
+
+    # Step 2: Wait for grace period
+    Write-Log "Waiting ${GracePeriodSeconds}s for VM to save state..."
+    Start-Sleep -Seconds $GracePeriodSeconds
+
+    # Step 3: Get associated resources before deletion
+    $vm = Get-AzVM -ResourceGroupName $ResourceGroupName -Name $VMName -ErrorAction SilentlyContinue
+    if (-not $vm) {
+        Write-Log "VM not found: $VMName" "ERROR"
+        return @{ Success = $false; Error = "VM not found" }
+    }
+
+    $nicId = $vm.NetworkProfile.NetworkInterfaces[0].Id
+    $osDiskName = $vm.StorageProfile.OsDisk.Name
+    $nicName = ($nicId -split '/')[-1]
+
+    # Get NIC to find Public IP
+    $nic = Get-AzNetworkInterface -ResourceGroupName $ResourceGroupName -Name $nicName -ErrorAction SilentlyContinue
+    $pipId = $nic.IpConfigurations[0].PublicIpAddress.Id
+    $pipName = if ($pipId) { ($pipId -split '/')[-1] } else { $null }
+    $nsgId = $nic.NetworkSecurityGroup.Id
+    $nsgName = if ($nsgId) { ($nsgId -split '/')[-1] } else { $null }
+
+    Write-Log "Resources to delete: VM=$VMName, Disk=$osDiskName, NIC=$nicName, PIP=$pipName, NSG=$nsgName"
+
+    # Step 4: Delete VM (this should cascade to Disk and NIC if DeleteOption=Delete)
+    try {
+        Write-Log "Deleting VM: $VMName"
+        Remove-AzVM -ResourceGroupName $ResourceGroupName -Name $VMName -Force -ErrorAction Stop
+        Write-Log "VM deleted successfully"
+    } catch {
+        Write-Log "Failed to delete VM: $($_.Exception.Message)" "ERROR"
+        return @{ Success = $false; Error = $_.Exception.Message }
+    }
+
+    # Step 5: Clean up orphaned resources (Public IP, NSG may not auto-delete)
+    Start-Sleep -Seconds 5  # Wait for cascade deletion
+
+    if ($pipName) {
+        $orphanPip = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name $pipName -ErrorAction SilentlyContinue
+        if ($orphanPip) {
+            try {
+                Write-Log "Deleting orphaned Public IP: $pipName"
+                Remove-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name $pipName -Force -ErrorAction Stop
+            } catch {
+                Write-Log "Failed to delete Public IP: $($_.Exception.Message)" "WARN"
+            }
+        }
+    }
+
+    if ($nsgName) {
+        $orphanNsg = Get-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Name $nsgName -ErrorAction SilentlyContinue
+        if ($orphanNsg) {
+            try {
+                Write-Log "Deleting orphaned NSG: $nsgName"
+                Remove-AzNetworkSecurityGroup -ResourceGroupName $ResourceGroupName -Name $nsgName -Force -ErrorAction Stop
+            } catch {
+                Write-Log "Failed to delete NSG: $($_.Exception.Message)" "WARN"
+            }
+        }
+    }
+
+    Write-Log "Graceful deletion completed for: $VMName" "SUCCESS"
+    return @{
+        Success = $true
+        VMName = $VMName
+        DeletedResources = @($VMName, $osDiskName, $nicName, $pipName, $nsgName) | Where-Object { $_ }
     }
 }
 
@@ -1077,6 +1186,20 @@ if ($CreateInfrastructureOnly) {
     exit 0
 }
 
+# ==== GRACEFUL DELETION MODE ====
+if ($GracefulDelete) {
+    Write-Log "Graceful deletion mode - will delete VMs after allowing them to save state"
+    $results = @()
+
+    foreach ($vmN in $vmNames) {
+        $result = Remove-SpotVMGracefully -ResourceGroupName $ResourceGroupName -VMName $vmN -GracePeriodSeconds $GracePeriodSeconds
+        $results += $result
+    }
+
+    Write-Log "Graceful deletion completed for $($results.Count) VM(s)"
+    return $results
+}
+
 # ==== CREDENTIALS ====
 $credData = Get-VMCredentials
 $credential = $credData.Credential
@@ -1259,6 +1382,39 @@ foreach ($vmN in $vmNames) {
     }
     if (-not $nic) { continue }
 
+    # Set Public IP delete option via REST API (PowerShell cmdlets don't support this directly)
+    # This ensures Public IP is auto-deleted when VM is evicted/deleted
+    if (-not $NoPublicIP -and $pip) {
+        try {
+            Write-Log "Configuring Public IP auto-delete on NIC..." "DEBUG"
+            $subscriptionId = (Get-AzContext).Subscription.Id
+            $nicApiPath = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/networkInterfaces/$nicName`?api-version=2023-09-01"
+
+            # Get current NIC config
+            $nicResponse = Invoke-AzRestMethod -Method GET -Path $nicApiPath
+            if ($nicResponse.StatusCode -eq 200) {
+                $nicJson = $nicResponse.Content | ConvertFrom-Json
+
+                # Add deleteOption to publicIPAddress in ipConfigurations
+                if ($nicJson.properties.ipConfigurations[0].properties.publicIPAddress) {
+                    $nicJson.properties.ipConfigurations[0].properties.publicIPAddress | Add-Member -NotePropertyName "properties" -NotePropertyValue @{ deleteOption = "Delete" } -Force
+
+                    # Update NIC
+                    $updatePayload = $nicJson | ConvertTo-Json -Depth 20 -Compress
+                    $updateResponse = Invoke-AzRestMethod -Method PUT -Path $nicApiPath -Payload $updatePayload
+                    if ($updateResponse.StatusCode -eq 200 -or $updateResponse.StatusCode -eq 201) {
+                        Write-Log "Public IP configured for auto-delete on VM deletion/eviction" "SUCCESS"
+                    } else {
+                        Write-Log "Failed to set Public IP delete option: HTTP $($updateResponse.StatusCode)" "WARN"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Could not configure Public IP auto-delete: $($_.Exception.Message)" "WARN"
+            Write-Log "Public IP may need manual cleanup after VM deletion" "WARN"
+        }
+    }
+
     try {
         # VM Config
         $vmConfig = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
@@ -1295,7 +1451,7 @@ foreach ($vmN in $vmNames) {
 
         $vmConfig = Set-AzVMSourceImage -VM $vmConfig -PublisherName $ImagePublisher -Offer $actualImageOffer -Skus $actualImageSku -Version $ImageVersion
         $vmConfig = Add-AzVMNetworkInterface -VM $vmConfig -Id $nic.Id -DeleteOption "Delete"
-            $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
+            $vmConfig = Set-AzVMOSDisk -VM $vmConfig -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage" -DiskSizeInGB $OSDiskSizeGB
             $vmConfig = Set-AzVMBootDiagnostic -VM $vmConfig -Enable
 
             if ($SshPublicKey) {            $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential -DisablePasswordAuthentication
@@ -1304,9 +1460,34 @@ foreach ($vmN in $vmNames) {
             $vmConfig = Set-AzVMOperatingSystem -VM $vmConfig -Linux -ComputerName $vmN -Credential $credential
         }
 
+        # Generate write-back cache cloud-init if requested
+        $effectiveCustomData = $CustomData
+        if ($MaxWritebackCache) {
+            $writebackCloudInit = @"
+#cloud-config
+write_files:
+  - path: /etc/sysctl.d/99-writeback.conf
+    content: |
+      # Aggressive write-back cache (spot VM - data loss acceptable)
+      vm.dirty_bytes = 4294967296
+      vm.dirty_background_bytes = 2147483648
+      vm.dirty_expire_centisecs = 30000
+      vm.dirty_writeback_centisecs = 500
+runcmd:
+  - sysctl --system
+  - echo "Writeback cache configured: dirty_bytes=$(sysctl -n vm.dirty_bytes), dirty_background_bytes=$(sysctl -n vm.dirty_background_bytes)" >> /var/log/cloud-init-output.log
+"@
+            if ($CustomData) {
+                Write-Log "Warning: -MaxWritebackCache with -CustomData - writeback settings will be applied via RunCommand after VM creation" "WARN"
+            } else {
+                $effectiveCustomData = $writebackCloudInit
+                Write-Log "Added write-back cache cloud-init configuration"
+            }
+        }
+
         # Custom data (cloud-init)
-        if ($CustomData) {
-            $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
+        if ($effectiveCustomData) {
+            $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($effectiveCustomData))
             $vmConfig.OSProfile.CustomData = $encodedData
             Write-Log "Added cloud-init custom data"
         }
@@ -1375,6 +1556,62 @@ foreach ($vmN in $vmNames) {
                 }
             } catch {
                  Write-Log "Failed to retrieve Public IP address: $($_.Exception.Message)" "WARN"
+            }
+        }
+
+        # Disable disk network access if requested (no export endpoint)
+        if ($DisableDiskNetworkAccess) {
+            try {
+                $osDiskName = "$vmN-osdisk"
+                Write-Log "Disabling network access for OS disk: $osDiskName"
+                $diskConfig = New-AzDiskUpdateConfig -PublicNetworkAccess Disabled -NetworkAccessPolicy DenyAll
+                Update-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -DiskUpdate $diskConfig -ErrorAction Stop | Out-Null
+                Write-Log "Disk network access disabled (no public/private endpoint)"
+            } catch {
+                Write-Log "Failed to disable disk network access: $($_.Exception.Message)" "WARN"
+            }
+        }
+
+        # Note: Delete options are configured as follows:
+        # - OS Disk: DeleteOption="Delete" set in Set-AzVMOSDisk
+        # - NIC: DeleteOption="Delete" set in Add-AzVMNetworkInterface
+        # - Public IP: DeleteOption="Delete" set via REST API after NIC creation
+        # - NSG: No auto-delete (shared resource) - use -NoNSG to skip creation
+
+        # Apply and verify write-back cache settings via RunCommand
+        if ($MaxWritebackCache) {
+            try {
+                Write-Log "Applying write-back cache settings via RunCommand..."
+                $writebackScript = @"
+#!/bin/bash
+# Apply sysctl settings (in case cloud-init did not run or user had custom data)
+cat > /etc/sysctl.d/99-writeback.conf << 'SYSCTL'
+# Aggressive write-back cache (spot VM - data loss acceptable)
+vm.dirty_bytes = 4294967296
+vm.dirty_background_bytes = 2147483648
+vm.dirty_expire_centisecs = 30000
+vm.dirty_writeback_centisecs = 500
+SYSCTL
+sysctl --system > /dev/null 2>&1
+# Verify and output current values
+echo "dirty_bytes=`$(sysctl -n vm.dirty_bytes)"
+echo "dirty_background_bytes=`$(sysctl -n vm.dirty_background_bytes)"
+"@
+                $runResult = Invoke-AzVMRunCommand -ResourceGroupName $ResourceGroupName -VMName $vmN -CommandId 'RunShellScript' -ScriptString $writebackScript -ErrorAction Stop
+                $output = $runResult.Value[0].Message
+                if ($output -match "dirty_bytes=(\d+)") {
+                    $dirtyBytes = [long]$Matches[1]
+                    if ($dirtyBytes -ge 4000000000) {
+                        Write-Log "Write-back cache verified: dirty_bytes=$dirtyBytes (4 GiB)" "SUCCESS"
+                    } else {
+                        Write-Log "Write-back cache may not be fully applied: dirty_bytes=$dirtyBytes" "WARN"
+                    }
+                }
+                if ($output -match "dirty_background_bytes=(\d+)") {
+                    Write-Log "dirty_background_bytes=$($Matches[1])"
+                }
+            } catch {
+                Write-Log "Failed to apply/verify write-back cache: $($_.Exception.Message)" "WARN"
             }
         }
 
@@ -1468,6 +1705,19 @@ foreach ($vmN in $vmNames) {
                         }
                     }
 
+                    # Disable disk network access if requested (no export endpoint)
+                    if ($DisableDiskNetworkAccess) {
+                        try {
+                            $osDiskName = "$vmN-osdisk"
+                            Write-Log "Disabling network access for OS disk: $osDiskName"
+                            $diskConfig = New-AzDiskUpdateConfig -PublicNetworkAccess Disabled -NetworkAccessPolicy DenyAll
+                            Update-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -DiskUpdate $diskConfig -ErrorAction Stop | Out-Null
+                            Write-Log "Disk network access disabled (no public/private endpoint)"
+                        } catch {
+                            Write-Log "Failed to disable disk network access: $($_.Exception.Message)" "WARN"
+                        }
+                    }
+
                     # Update result entry to success
                     $resultEntry.Success = $true
                     $resultEntry.Remove('Error')
@@ -1502,7 +1752,7 @@ foreach ($vmN in $vmNames) {
                     $vmConfigRetry = Set-AzVMSecurityProfile -VM $vmConfigRetry -SecurityType "Standard"
                     $vmConfigRetry = Set-AzVMSourceImage -VM $vmConfigRetry -PublisherName $ImagePublisher -Offer $actualImageOffer -Skus $actualImageSku -Version $ImageVersion
                     $vmConfigRetry = Add-AzVMNetworkInterface -VM $vmConfigRetry -Id $nic.Id -DeleteOption "Delete"
-                    $vmConfigRetry = Set-AzVMOSDisk -VM $vmConfigRetry -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
+                    $vmConfigRetry = Set-AzVMOSDisk -VM $vmConfigRetry -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage" -DiskSizeInGB $OSDiskSizeGB
                     $vmConfigRetry = Set-AzVMBootDiagnostic -VM $vmConfigRetry -Enable
                     $vmConfigRetry = Set-AzVMOperatingSystem -VM $vmConfigRetry -Linux -ComputerName $vmN -Credential $credential
                     if ($CustomData) {
@@ -1518,6 +1768,19 @@ foreach ($vmN in $vmNames) {
                     }
                     $vm = New-AzVM @vmRetryParams
                     Write-Log "VM created on retry with Standard security: $vmN" "SUCCESS"
+
+                    # Disable disk network access if requested (no export endpoint)
+                    if ($DisableDiskNetworkAccess) {
+                        try {
+                            $osDiskName = "$vmN-osdisk"
+                            Write-Log "Disabling network access for OS disk: $osDiskName"
+                            $diskConfig = New-AzDiskUpdateConfig -PublicNetworkAccess Disabled -NetworkAccessPolicy DenyAll
+                            Update-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -DiskUpdate $diskConfig -ErrorAction Stop | Out-Null
+                            Write-Log "Disk network access disabled (no public/private endpoint)"
+                        } catch {
+                            Write-Log "Failed to disable disk network access: $($_.Exception.Message)" "WARN"
+                        }
+                    }
 
                     # Update result entry to success
                     $resultEntry.Success = $true
