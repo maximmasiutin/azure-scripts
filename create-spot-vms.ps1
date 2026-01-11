@@ -112,7 +112,8 @@ param(
     [switch]$NoNSG,         # If set, skip NSG creation entirely (use with RemoveSSH in init script)
     [switch]$CleanupOrphans, # If set, delete orphaned Public IPs before VM creation
     [switch]$TrustedLaunchOnly,  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
-    [switch]$DisableAcceleratedNetworking  # If set, disable AcceleratedNetworking (MANA/FastPath) - enabled by default
+    [switch]$DisableAcceleratedNetworking,  # If set, disable AcceleratedNetworking (MANA/FastPath) - enabled by default
+    [switch]$CreateInfrastructureOnly  # If set, only create RG/VNet/NAT Gateway (requires -UseNatGateway), return JSON and exit
 )
 
 # PowerShell version check
@@ -1005,9 +1006,30 @@ try {
                 Write-Log "NAT Gateway created and associated with subnet: $SubnetName" "SUCCESS"
                 Write-Log "  All VMs in this subnet will share outbound IP: $($natPip.IpAddress)" "INFO"
             } catch {
-                Write-Log "Error creating/configuring NAT Gateway: $($_.Exception.Message)" "ERROR"
-                Write-Log "  VMs may not have outbound internet connectivity" "WARN"
-                # Don't fail the whole script - VM creation may still succeed
+                # Race condition: another worker may have created NAT Gateway while we were trying
+                # Check if it exists now (CanceledAndSupersededDueToAnotherOperation means another succeeded)
+                $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
+                if ($natGw) {
+                    $existingPip = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name "$natGwName-pip" -ErrorAction SilentlyContinue
+                    $pipAddr = if ($existingPip) { $existingPip.IpAddress } else { "(unknown)" }
+                    Write-Log "NAT Gateway created by concurrent worker, using: $natGwName (outbound IP: $pipAddr)"
+
+                    # Ensure subnet is associated with NAT Gateway (may not be if we lost the race mid-creation)
+                    $subnet = Get-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName
+                    if (-not $subnet.NatGateway) {
+                        try {
+                            Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName -AddressPrefix $subnet.AddressPrefix -NatGateway $natGw | Out-Null
+                            $vnet | Set-AzVirtualNetwork | Out-Null
+                            Write-Log "  Associated NAT Gateway with subnet: $SubnetName"
+                        } catch {
+                            Write-Log "  Subnet association may already be in progress" "DEBUG"
+                        }
+                    }
+                } else {
+                    Write-Log "Error creating/configuring NAT Gateway: $($_.Exception.Message)" "ERROR"
+                    Write-Log "  VMs may not have outbound internet connectivity" "WARN"
+                    # Don't fail the whole script - VM creation may still succeed
+                }
             }
         } else {
             # NAT Gateway already exists (created by previous VM in same RG)
@@ -1020,6 +1042,39 @@ try {
     Write-Log "  Add -UseNatGateway to create NAT Gateway for outbound connectivity" "WARN"
 } else {
     Write-Log "Skipping NAT Gateway (UseNatGateway not specified)" "DEBUG"
+}
+
+# ==== INFRASTRUCTURE-ONLY MODE ====
+# If CreateInfrastructureOnly is set, output JSON with created resources and exit
+if ($CreateInfrastructureOnly) {
+    if (-not $UseNatGateway) {
+        Write-Log "CreateInfrastructureOnly requires -UseNatGateway" "ERROR"
+        exit 1
+    }
+
+    # Gather resource info
+    $natGwName = "$NetworkName-natgw"
+    $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
+    $natPip = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name "$natGwName-pip" -ErrorAction SilentlyContinue
+    $vnet = Get-AzVirtualNetwork -ResourceGroupName $ResourceGroupName -Name $NetworkName -ErrorAction SilentlyContinue
+
+    $result = @{
+        Success = $true
+        ResourceGroupName = $ResourceGroupName
+        Location = $Location
+        VNetName = $NetworkName
+        SubnetName = $SubnetName
+        NatGatewayName = $natGwName
+        NatGatewayPublicIP = if ($natPip) { $natPip.IpAddress } else { $null }
+        VNetAddressPrefix = $VnetAddressPrefix
+        SubnetAddressPrefix = $SubnetAddressPrefix
+        NatGatewayExists = ($null -ne $natGw)
+        VNetExists = ($null -ne $vnet)
+    }
+
+    Write-Log "Infrastructure created successfully" "SUCCESS"
+    $result | ConvertTo-Json -Compress
+    exit 0
 }
 
 # ==== CREDENTIALS ====
@@ -1377,6 +1432,13 @@ foreach ($vmN in $vmNames) {
             Write-Log "VM size $VMSize requires feature flag registration (preview/restricted)" "WARN"
             Write-Log "Required flags: $($resultEntry.RequiredFeatureFlags)" "WARN"
             Write-Log "This VM size is in limited preview - register via Azure Portal or contact support" "WARN"
+        }
+
+        # Check if FastPath/AcceleratedNetworking error
+        if ($errorMsg -match "FastPath|FastPathDoesNotSupport") {
+            $resultEntry.FastPathError = $true
+            Write-Log "FastPath/AcceleratedNetworking error detected" "WARN"
+            Write-Log "Retry with -DisableAcceleratedNetworking to bypass" "WARN"
         }
 
         # Check if securityProfile.securityType conflict (orphaned disk with different security type)

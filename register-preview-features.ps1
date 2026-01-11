@@ -8,6 +8,7 @@
 #   - Graceful error handling: Skips features that don't support self-registration
 #   - Progress tracking: Shows registration status for each feature
 #   - Export support: Save results to CSV for documentation
+#   - State backup/restore: Save and restore feature states to/from JSON files
 #
 # Switches:
 #   -ProviderNamespace  Filter to specific provider (e.g., "Microsoft.Compute")
@@ -16,16 +17,22 @@
 #   -Unregister         Unregister (disable) the specified feature(s)
 #   -ListOnly           List features without registering
 #   -UnregisteredOnly   Only show/process unregistered features
+#   -SaveState          Save current feature states to JSON file
+#   -RestoreState       Restore feature states from JSON file
+#   -StateFile          Path to state file (default: preview-features-state-TIMESTAMP.json)
 #   -Force              Skip confirmation prompt
 #   -WhatIf             Show what would be registered/unregistered
 #
 # Examples:
+#   pwsh register-preview-features.ps1 -SaveState
+#   pwsh register-preview-features.ps1 -SaveState -StateFile "my-features.json"
+#   pwsh register-preview-features.ps1 -SaveState -ProviderNamespace "Microsoft.Compute"
+#   pwsh register-preview-features.ps1 -RestoreState -StateFile "my-features.json"
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -Force
 #   pwsh register-preview-features.ps1 -ListOnly
 #   pwsh register-preview-features.ps1 -WhatIf
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -CheckStatus
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
-#   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath,EnableAcceleratedNetworking" -CheckStatus
 #
 # Requires: Azure PowerShell module (Az), Contributor/Owner role
 
@@ -39,11 +46,13 @@
     - Register unregistered features (bulk or specific)
     - Unregister (disable) specific features
     - Check status of specific features
+    - Save current feature states to JSON file for backup
+    - Restore feature states from a saved JSON file
     Some features require Microsoft approval and will show as "Pending".
 
 .PARAMETER ProviderNamespace
     Optional. Filter to specific provider namespace (e.g., "Microsoft.Compute").
-    Required when using -FeatureName.
+    Required when using -FeatureName. Can be comma-separated for multiple namespaces.
 
 .PARAMETER FeatureName
     Optional. Target specific feature(s) by name. Can be:
@@ -66,11 +75,43 @@
 .PARAMETER UnregisteredOnly
     Only show/process features that are not yet registered.
 
+.PARAMETER SaveState
+    Save current feature states to a JSON file for backup.
+    Use with -ProviderNamespace to save specific namespace(s) or omit for all.
+
+.PARAMETER RestoreState
+    Restore feature states from a previously saved JSON file.
+    Requires -StateFile parameter.
+
+.PARAMETER StateFile
+    Path to state file for -SaveState or -RestoreState operations.
+    Default for SaveState: preview-features-state-YYYYMMDD-HHMMSS.json
+
+.PARAMETER ExcludeFeatures
+    Array of feature names to exclude from registration (used with bulk registration).
+    Default: @("AutomaticZoneRebalancing")
+
 .PARAMETER ExportPath
     Path to export results as CSV file.
 
 .PARAMETER WhatIf
     Show what would be registered/unregistered without actually doing it.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -SaveState
+    Saves all preview features from all namespaces to a timestamped JSON file.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -SaveState -ProviderNamespace "Microsoft.Compute"
+    Saves only Microsoft.Compute features to a timestamped JSON file.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -SaveState -StateFile "my-backup.json"
+    Saves all features to the specified file.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -RestoreState -StateFile "my-backup.json"
+    Restores feature states from the specified file.
 
 .EXAMPLE
     .\register-preview-features.ps1 -ListOnly
@@ -87,18 +128,6 @@
 .EXAMPLE
     .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
     Unregisters (disables) the AllowManaFastPath feature.
-
-.EXAMPLE
-    .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath"
-    Registers (enables) the AllowManaFastPath feature.
-
-.EXAMPLE
-    .\register-preview-features.ps1 -UnregisteredOnly -ExportPath "features.csv"
-    Registers all unregistered features and exports results to CSV.
-
-.EXAMPLE
-    .\register-preview-features.ps1 -WhatIf
-    Shows what features would be registered without making changes.
 
 .NOTES
     Requires Azure PowerShell module (Az) and Contributor/Owner role.
@@ -129,6 +158,18 @@ param(
 
     [Parameter(Mandatory = $false)]
     [switch]$UnregisteredOnly,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$SaveState,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$RestoreState,
+
+    [Parameter(Mandatory = $false)]
+    [string]$StateFile,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$ExcludeFeatures = @("AutomaticZoneRebalancing"),
 
     [Parameter(Mandatory = $false)]
     [string]$ExportPath,
@@ -330,6 +371,273 @@ if (-not (Test-AzureConnection)) {
     exit 1
 }
 
+# Patterns for internal/restricted features that can't be self-registered
+$internalPatterns = @(
+    "^platformsettings\.",          # Internal platform settings
+    "^Canonical",                    # Canonical partnership features
+    "^Fabric\.",                     # Fabric internal features
+    "^PreprovisionedVMEscrow\.",     # Internal escrow features
+    "PRDAPP",                        # Datacenter-specific features
+    "^MRProfile",                    # Internal MR features
+    "^Jedi",                         # Internal Jedi features
+    "^ListOfPinnedFabricClusters",   # Internal cluster configs
+    "^MHSM-"                         # Internal MHSM features
+)
+
+function Test-InternalFeature {
+    param([string]$FeatureName)
+    foreach ($pattern in $internalPatterns) {
+        if ($FeatureName -match $pattern) {
+            return $true
+        }
+    }
+    return $false
+}
+
+# Handle SaveState operation
+if ($SaveState) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Azure Preview Features State Backup  " -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Get features
+    $features = Get-AllPreviewFeatures -Namespace $ProviderNamespace
+
+    if ($features.Count -eq 0) {
+        Write-Log "No features found." "WARN"
+        exit 0
+    }
+
+    # Generate default filename with timestamp
+    if (-not $StateFile) {
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $StateFile = "preview-features-state-$timestamp.json"
+    }
+
+    Write-Log "Saving $($features.Count) features to $StateFile..." "INFO"
+
+    $exportData = @{
+        timestamp = (Get-Date -Format "yyyy-MM-dd HH:mm:ss")
+        subscription = (Get-AzContext).Subscription.Name
+        subscriptionId = (Get-AzContext).Subscription.Id
+        namespaceFilter = if ($ProviderNamespace) { $ProviderNamespace } else { "*" }
+        features = @()
+    }
+
+    foreach ($f in $features) {
+        $exportData.features += @{
+            namespace = $f.ProviderName
+            name = $f.FeatureName
+            state = $f.RegistrationState
+        }
+    }
+
+    $exportData | ConvertTo-Json -Depth 4 | Out-File -FilePath $StateFile -Encoding UTF8
+    Write-Log "Saved $($features.Count) features to: $StateFile" "SUCCESS"
+
+    # Summary by state
+    $registered = ($features | Where-Object { $_.RegistrationState -eq "Registered" }).Count
+    $notRegistered = ($features | Where-Object { $_.RegistrationState -in @("NotRegistered", "Unregistered") }).Count
+    $other = $features.Count - $registered - $notRegistered
+
+    # Summary by namespace
+    $byNamespace = $features | Group-Object ProviderName
+
+    Write-Host ""
+    Write-Host "By state: $registered registered, $notRegistered not registered, $other other" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "By namespace (top 15):" -ForegroundColor Cyan
+    $byNamespace | Sort-Object Count -Descending | Select-Object -First 15 | ForEach-Object {
+        Write-Host "  $($_.Name): $($_.Count)"
+    }
+    if ($byNamespace.Count -gt 15) {
+        Write-Host "  ... and $($byNamespace.Count - 15) more namespaces" -ForegroundColor Gray
+    }
+
+    exit 0
+}
+
+# Handle RestoreState operation
+if ($RestoreState) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Azure Preview Features State Restore " -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    if (-not $StateFile) {
+        Write-Log "ERROR: -StateFile is required for -RestoreState" "ERROR"
+        exit 1
+    }
+
+    if (-not (Test-Path $StateFile)) {
+        Write-Log "ERROR: File not found: $StateFile" "ERROR"
+        exit 1
+    }
+
+    Write-Log "Loading features from $StateFile..." "INFO"
+    $savedData = Get-Content $StateFile -Raw | ConvertFrom-Json
+
+    Write-Host "  Saved at: $($savedData.timestamp)" -ForegroundColor Gray
+    Write-Host "  Subscription: $($savedData.subscription)" -ForegroundColor Gray
+    Write-Host "  Features in file: $($savedData.features.Count)" -ForegroundColor Gray
+    Write-Host "  Namespace filter: $($savedData.namespaceFilter)" -ForegroundColor Gray
+    Write-Host ""
+
+    # Get current features
+    $currentFeatures = Get-AllPreviewFeatures -Namespace $ProviderNamespace
+
+    # Build lookup of current states
+    $currentStates = @{}
+    foreach ($f in $currentFeatures) {
+        $key = "$($f.ProviderName)/$($f.FeatureName)"
+        $currentStates[$key] = $f.RegistrationState
+    }
+
+    # Find differences
+    $toRegister = @()
+    $toUnregister = @()
+
+    foreach ($saved in $savedData.features) {
+        $key = "$($saved.namespace)/$($saved.name)"
+        $currentState = $currentStates[$key]
+
+        # Skip internal features
+        if (Test-InternalFeature -FeatureName $saved.name) {
+            continue
+        }
+
+        if ($saved.state -eq "Registered" -and $currentState -notin @("Registered", "Registering")) {
+            $toRegister += $saved
+        }
+        elseif ($saved.state -in @("NotRegistered", "Unregistered") -and $currentState -eq "Registered") {
+            $toUnregister += $saved
+        }
+    }
+
+    Write-Host "Changes needed:" -ForegroundColor Yellow
+    Write-Host "  To register: $($toRegister.Count)" -ForegroundColor Green
+    Write-Host "  To unregister: $($toUnregister.Count)" -ForegroundColor Red
+    Write-Host ""
+
+    if ($toRegister.Count -eq 0 -and $toUnregister.Count -eq 0) {
+        Write-Log "No changes needed - current state matches saved state." "SUCCESS"
+        exit 0
+    }
+
+    if ($toRegister.Count -gt 0) {
+        Write-Host "Features to register:" -ForegroundColor Green
+        $toRegister | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.namespace)/$($_.name)" }
+        if ($toRegister.Count -gt 20) {
+            Write-Host "  ... and $($toRegister.Count - 20) more" -ForegroundColor Gray
+        }
+        Write-Host ""
+    }
+
+    if ($toUnregister.Count -gt 0) {
+        Write-Host "Features to unregister:" -ForegroundColor Red
+        $toUnregister | Select-Object -First 20 | ForEach-Object { Write-Host "  $($_.namespace)/$($_.name)" }
+        if ($toUnregister.Count -gt 20) {
+            Write-Host "  ... and $($toUnregister.Count - 20) more" -ForegroundColor Gray
+        }
+        Write-Host ""
+    }
+
+    if (-not $Force) {
+        $confirm = Read-Host "Proceed with restore? (Y/N)"
+        if ($confirm -ne "Y" -and $confirm -ne "y") {
+            Write-Log "Operation cancelled by user." "WARN"
+            exit 0
+        }
+    }
+
+    # Track affected namespaces for provider registration
+    $affectedNamespaces = @{}
+    $registeredCount = 0
+    $unregisteredCount = 0
+    $skippedCount = 0
+    $failedCount = 0
+
+    # Register features
+    $total = $toRegister.Count + $toUnregister.Count
+    $current = 0
+
+    foreach ($item in $toRegister) {
+        $current++
+        Write-Progress -Activity "Restoring Feature States" -Status "Registering $current of $total" -PercentComplete (($current / $total) * 100)
+
+        Write-Host "Registering $($item.namespace)/$($item.name)..." -ForegroundColor Cyan -NoNewline
+        $result = Register-PreviewFeature -FeatureName $item.name -ProviderNamespace $item.namespace
+        if ($result.Success) {
+            Write-Host " OK" -ForegroundColor Green
+            $affectedNamespaces[$item.namespace] = $true
+            $registeredCount++
+        }
+        elseif ($result.State -eq "Unsupported") {
+            Write-Host " SKIPPED (restricted)" -ForegroundColor Yellow
+            $skippedCount++
+        }
+        else {
+            Write-Host " FAILED" -ForegroundColor Red
+            $failedCount++
+        }
+
+        Start-Sleep -Milliseconds 200
+    }
+
+    # Unregister features
+    foreach ($item in $toUnregister) {
+        $current++
+        Write-Progress -Activity "Restoring Feature States" -Status "Unregistering $current of $total" -PercentComplete (($current / $total) * 100)
+
+        Write-Host "Unregistering $($item.namespace)/$($item.name)..." -ForegroundColor Cyan -NoNewline
+        $result = Unregister-PreviewFeature -FeatureName $item.name -ProviderNamespace $item.namespace
+        if ($result.Success) {
+            Write-Host " OK" -ForegroundColor Green
+            $affectedNamespaces[$item.namespace] = $true
+            $unregisteredCount++
+        }
+        elseif ($result.State -eq "Unsupported") {
+            Write-Host " SKIPPED (restricted)" -ForegroundColor Yellow
+            $skippedCount++
+        }
+        else {
+            Write-Host " FAILED" -ForegroundColor Red
+            $failedCount++
+        }
+
+        Start-Sleep -Milliseconds 200
+    }
+
+    Write-Progress -Activity "Restoring Feature States" -Completed
+
+    # Summary
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "           Restore Summary             " -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Registered:    $registeredCount" -ForegroundColor Green
+    Write-Host "  Unregistered:  $unregisteredCount" -ForegroundColor Yellow
+    Write-Host "  Skipped:       $skippedCount" -ForegroundColor Yellow
+    Write-Host "  Failed:        $failedCount" -ForegroundColor Red
+    Write-Host ""
+
+    # Register affected providers
+    if ($affectedNamespaces.Count -gt 0) {
+        Write-Log "Registering providers to propagate changes..." "INFO"
+        foreach ($ns in $affectedNamespaces.Keys) {
+            Write-Host "  Register-AzResourceProvider -ProviderNamespace $ns" -ForegroundColor Gray
+            Register-AzResourceProvider -ProviderNamespace $ns | Out-Null
+        }
+        Write-Log "Done." "SUCCESS"
+    }
+
+    exit 0
+}
+
 # Parse FeatureName if provided as comma-separated string
 if ($FeatureName -and $FeatureName.Count -eq 1 -and $FeatureName[0] -match ',') {
     $FeatureName = $FeatureName[0] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
@@ -524,12 +832,36 @@ $toRegister = $features | Where-Object {
     $_.RegistrationState -eq "NotRegistered"
 }
 
+# Filter out excluded features by name
+$toRegister = $toRegister | Where-Object {
+    $_.FeatureName -notin $ExcludeFeatures
+}
+
+# Filter out internal/restricted features
+$skippedInternal = @()
+$toRegister = $toRegister | Where-Object {
+    if (Test-InternalFeature -FeatureName $_.FeatureName) {
+        $skippedInternal += "$($_.ProviderName)/$($_.FeatureName)"
+        return $false
+    }
+    return $true
+}
+
 if ($toRegister.Count -eq 0) {
-    Write-Log "No unregistered features to register." "INFO"
+    Write-Log "No registerable features to register." "INFO"
+    if ($skippedInternal.Count -gt 0) {
+        Write-Host "Skipped $($skippedInternal.Count) internal/restricted features." -ForegroundColor Gray
+    }
     exit 0
 }
 
-Write-Log "Found $($toRegister.Count) unregistered features to process" "INFO"
+Write-Log "Found $($toRegister.Count) features to register" "INFO"
+if ($ExcludeFeatures.Count -gt 0) {
+    Write-Host "Excluded by name: $($ExcludeFeatures -join ', ')" -ForegroundColor Yellow
+}
+if ($skippedInternal.Count -gt 0) {
+    Write-Host "Skipped $($skippedInternal.Count) internal/restricted features" -ForegroundColor Gray
+}
 Write-Host ""
 
 # Confirm registration
