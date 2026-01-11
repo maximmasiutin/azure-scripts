@@ -1000,6 +1000,7 @@ foreach ($vmN in $vmNames) {
     # Check if VM size supports accelerated networking
     # AcceleratedNetworking (MANA/FastPath) - disabled by default due to region issues
     # Enable only if explicitly requested via -EnableAcceleratedNetworking parameter
+    # For v6 VMs with MANA NICs, explicitly disable to avoid FastPath errors
     if ($EnableAcceleratedNetworking) {
         $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
         $supportsAccelNet = $false
@@ -1013,6 +1014,13 @@ foreach ($vmN in $vmNames) {
             $nicParams.EnableAcceleratedNetworking = $true
             Write-Log "AcceleratedNetworking enabled for $vmN" "INFO"
         }
+    }
+    else {
+        # Explicitly disable AcceleratedNetworking to avoid FastPath/MANA issues on v6 VMs
+        # Error: "FastPathDoesNotSupportApplicationGatewayDeployment" occurs when FastPath
+        # preview features are in Pending state or when MANA NICs default to FastPath
+        $nicParams.EnableAcceleratedNetworking = $false
+        Write-Log "AcceleratedNetworking explicitly disabled for $vmN" "INFO"
     }
 
     # Public IP (with smart retry for Azure propagation delays)
