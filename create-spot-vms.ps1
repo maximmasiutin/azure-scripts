@@ -1357,6 +1357,7 @@ foreach ($vmN in $vmNames) {
                     ResourceGroupName = $ResourceGroupName
                     Location = $Location
                     SubnetId = $subnetRetry.Id
+                    Force = $true
                     ErrorAction = "Stop"
                 }
                 # Explicitly do NOT set EnableAcceleratedNetworking
