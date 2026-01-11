@@ -80,7 +80,8 @@ param(
     [switch]$BlockSSH,      # If set, NSG will be created but SSH traffic blocked (default: allowed)
     [switch]$NoNSG,         # If set, skip NSG creation entirely (use with RemoveSSH in init script)
     [switch]$CleanupOrphans, # If set, delete orphaned Public IPs before VM creation
-    [switch]$TrustedLaunchOnly  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
+    [switch]$TrustedLaunchOnly,  # If set, fail if TrustedLaunch not supported (no fallback to Standard)
+    [switch]$EnableAcceleratedNetworking  # If set, enable AcceleratedNetworking (MANA/FastPath) - disabled by default due to region issues
 )
 
 # PowerShell version check
@@ -997,16 +998,21 @@ foreach ($vmN in $vmNames) {
     if ($ForceOverwrite) { $nicParams.Force = $true }
 
     # Check if VM size supports accelerated networking
-    $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
-    $supportsAccelNet = $false
-    foreach ($prefix in $supportedPrefixes) {
-        if ($VMSize -like "$prefix*") {
-            $supportsAccelNet = $true
-            break
+    # AcceleratedNetworking (MANA/FastPath) - disabled by default due to region issues
+    # Enable only if explicitly requested via -EnableAcceleratedNetworking parameter
+    if ($EnableAcceleratedNetworking) {
+        $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
+        $supportsAccelNet = $false
+        foreach ($prefix in $supportedPrefixes) {
+            if ($VMSize -like "$prefix*") {
+                $supportsAccelNet = $true
+                break
+            }
         }
-    }
-    if ($supportsAccelNet) {
-        $nicParams.EnableAcceleratedNetworking = $true
+        if ($supportsAccelNet) {
+            $nicParams.EnableAcceleratedNetworking = $true
+            Write-Log "AcceleratedNetworking enabled for $vmN" "INFO"
+        }
     }
 
     # Public IP (with smart retry for Azure propagation delays)
@@ -1308,126 +1314,6 @@ foreach ($vmN in $vmNames) {
         # Check if unsupported region
         if ($errorMsg -match "LocationNotAvailableForResourceType|not available for resource type|NoRegisteredProviderFound") {
             $resultEntry.UnsupportedRegion = $true
-        }
-
-        # Check if FastPath/accelerated networking error (region-specific network limitation)
-        # FastPath is MANA (Microsoft Azure Network Adapter) preview feature on v6 series VMs
-        # Some regions/VM sizes have issues with MANA FastPath - retry with AcceleratedNetworking disabled
-        if ($errorMsg -match "FastPathDoesNotSupportApplicationGatewayDeployment|FastPath.*not support") {
-            Write-Log "FastPath networking error detected in region $Location for VM size $VMSize" "WARN"
-            Write-Log "This is likely a MANA (Microsoft Azure Network Adapter) preview limitation" "WARN"
-            Write-Log "Azure error: FastPathDoesNotSupportApplicationGatewayDeployment (despite no AppGateway)" "WARN"
-            Write-Log "Retrying with Accelerated Networking disabled..." "WARN"
-
-            try {
-                # Delete orphaned resources from failed attempt
-                $existingDisk = Get-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -ErrorAction SilentlyContinue
-                if ($existingDisk) {
-                    Write-Log "Deleting orphaned OS disk: $vmN-osdisk" "WARN"
-                    Remove-AzDisk -ResourceGroupName $ResourceGroupName -DiskName "$vmN-osdisk" -Force -ErrorAction SilentlyContinue
-                }
-
-                # Delete the existing NIC (which has AcceleratedNetworking enabled)
-                $existingNic = Get-AzNetworkInterface -Name "$vmN-nic" -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-                if ($existingNic) {
-                    Write-Log "Deleting NIC with AcceleratedNetworking: $vmN-nic" "WARN"
-                    Remove-AzNetworkInterface -Name "$vmN-nic" -ResourceGroupName $ResourceGroupName -Force -ErrorAction SilentlyContinue
-                }
-
-                Start-Sleep -Seconds 5
-
-                # Create new NIC WITHOUT accelerated networking
-                Write-Log "Creating new NIC without AcceleratedNetworking..." "INFO"
-
-                # Re-fetch VNet and subnet (may be out of scope in error handler)
-                # VNet might have been deleted or not found after failed VM creation
-                $vnetRetry = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-                if (-not $vnetRetry) {
-                    Write-Log "VNet not found, recreating: $NetworkName" "WARN"
-                    $vnetRetry = New-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -Location $Location -AddressPrefix "10.0.0.0/16" -ErrorAction Stop
-                    $subnetConfig = Add-AzVirtualNetworkSubnetConfig -Name $SubnetName -AddressPrefix "10.0.0.0/24" -VirtualNetwork $vnetRetry
-                    $vnetRetry = Set-AzVirtualNetwork -VirtualNetwork $vnetRetry
-                    Write-Log "VNet recreated: $NetworkName" "SUCCESS"
-                    Start-Sleep -Seconds 5  # Wait for VNet to propagate
-                }
-                $subnetRetry = Get-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnetRetry -Name $SubnetName -ErrorAction Stop
-
-                $nicRetryParams = @{
-                    Name = "$vmN-nic"
-                    ResourceGroupName = $ResourceGroupName
-                    Location = $Location
-                    SubnetId = $subnetRetry.Id
-                    Force = $true
-                    ErrorAction = "Stop"
-                }
-                # Explicitly do NOT set EnableAcceleratedNetworking
-                if ($pipName -and -not $NoPublicIP) {
-                    $pipRetry = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-                    if (-not $pipRetry) {
-                        Write-Log "Public IP not found, recreating: $pipName" "WARN"
-                        $pipRetry = New-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -Location $Location -AllocationMethod Static -Sku Standard -ErrorAction Stop
-                        Write-Log "Public IP recreated: $pipName" "SUCCESS"
-                    }
-                    if ($pipRetry) {
-                        $nicRetryParams.PublicIpAddressId = $pipRetry.Id
-                    }
-                }
-                if ($nsg) {
-                    $nicRetryParams.NetworkSecurityGroupId = $nsg.Id
-                }
-                $nicRetry = New-AzNetworkInterface @nicRetryParams
-                Write-Log "Created NIC without AcceleratedNetworking: $vmN-nic" "SUCCESS"
-
-                # Rebuild VM config with new NIC
-                $vmConfigRetry = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
-                if (-not $isArm) {
-                    $vmConfigRetry = Set-AzVMSecurityProfile -VM $vmConfigRetry -SecurityType $SecurityType
-                }
-                $vmConfigRetry = Set-AzVMSourceImage -VM $vmConfigRetry -PublisherName $ImagePublisher -Offer $actualImageOffer -Skus $actualImageSku -Version $ImageVersion
-                $vmConfigRetry = Add-AzVMNetworkInterface -VM $vmConfigRetry -Id $nicRetry.Id -DeleteOption "Delete"
-                $vmConfigRetry = Set-AzVMOSDisk -VM $vmConfigRetry -Name "$vmN-osdisk" -DeleteOption "Delete" -Linux -StorageAccountType $StorageAccountType -CreateOption "FromImage"
-                $vmConfigRetry = Set-AzVMBootDiagnostic -VM $vmConfigRetry -Enable
-                $vmConfigRetry = Set-AzVMOperatingSystem -VM $vmConfigRetry -Linux -ComputerName $vmN -Credential $credential
-                if ($CustomData) {
-                    $encodedData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
-                    $vmConfigRetry.OSProfile.CustomData = $encodedData
-                }
-
-                $vmRetryParams = @{
-                    ResourceGroupName = $ResourceGroupName
-                    Location = $Location
-                    VM = $vmConfigRetry
-                    Verbose = $true
-                    ErrorAction = "Stop"
-                }
-                $vm = New-AzVM @vmRetryParams
-                Write-Log "VM created on retry without AcceleratedNetworking: $vmN" "SUCCESS"
-
-                # Get public IP for the successfully created VM
-                if (-not $NoPublicIP -and $pipName) {
-                    try {
-                        $publicIpObj = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
-                        $resultEntry.PublicIP = $publicIpObj.IpAddress
-                        Write-Log "Public IP: $($resultEntry.PublicIP)"
-                    } catch {
-                        Write-Log "Failed to retrieve Public IP: $($_.Exception.Message)" "WARN"
-                    }
-                }
-
-                # Update result entry to success
-                $resultEntry.Success = $true
-                $resultEntry.Remove('Error')
-                $resultEntry.FastPathRetry = $true
-                $resultEntry.AcceleratedNetworkingDisabled = $true
-                $resultEntry.AdminPassword = $generatedPassword
-            } catch {
-                $retryError = $_.Exception.Message
-                Write-Log "Retry without AcceleratedNetworking also failed: $retryError" "ERROR"
-                $resultEntry.RetryError = $retryError
-                $resultEntry.Error = $retryError  # Update error to retry error for proper handling
-                # Don't set FastPathError here - the retry error might be unrelated to FastPath
-                # Let the orchestrator handle the new error appropriately
-            }
         }
 
         # Check if VM size requires feature flag registration (preview/restricted SKUs)
