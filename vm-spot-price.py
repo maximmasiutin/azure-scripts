@@ -23,6 +23,7 @@ import os
 import re
 import sys
 import time
+import warnings
 from argparse import ArgumentParser, Namespace
 from functools import wraps
 from json import JSONDecodeError
@@ -83,6 +84,7 @@ def validate_file_path(file_path: str, operation: str = "write") -> str:
             )
 
     return real_path
+
 
 # Define virtual machine to search for
 # See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
@@ -805,8 +807,25 @@ def main() -> None:
         action="store_true",
         help="Return single region output in JSON format (for PowerShell parsing)",
     )
+    parser.add_argument(
+        "--show-deprecation-warnings",
+        action="store_true",
+        help="Show deprecation warnings from libraries (hidden by default)",
+    )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=20,
+        help="Number of results to display (default: 20, use 0 for all)",
+    )
 
     args: Namespace = parser.parse_args()
+
+    # Configure deprecation warnings (suppress by default unless explicitly requested)
+    if not args.show_deprecation_warnings:
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
+        warnings.filterwarnings("ignore", category=FutureWarning)
 
     if args.validate_config:
         print("Configuration validation:")
@@ -1157,7 +1176,8 @@ def main() -> None:
             print(
                 f"\nFound {len(per_core_data)} VM options in {args.min_cores}-{args.max_cores} vCPU range"
             )
-            print("Top 20 cheapest per-core options:\n")
+            top_label = f"Top {args.top}" if args.top > 0 else "All"
+            print(f"{top_label} cheapest per-core options:\n")
 
             headers = ["SKU", "$/Hour", "$/Core/Hr", "Cores", "Region"]
             display_data = []
@@ -1176,10 +1196,17 @@ def main() -> None:
                         row[5],  # Region
                     ]
                 )
-                if len(display_data) >= 20:
+                if args.top > 0 and len(display_data) >= args.top:
                     break
 
-            print(tabulate(display_data, headers=headers, tablefmt="psql", disable_numparse=True))
+            print(
+                tabulate(
+                    display_data,
+                    headers=headers,
+                    tablefmt="psql",
+                    disable_numparse=True,
+                )
+            )
         sys.exit(0)
 
     # Build list of VM sizes to query
@@ -1353,11 +1380,15 @@ def main() -> None:
             error_msg += f"\n\nSearched for: {sku}"
             if args.cpu > 32:
                 error_msg += f"\n\nNote: B-series VMs max out at 32 vCPUs. For {args.cpu} cores, try:"
-                error_msg += f"\n  --no-burstable           (search all non-burstable VMs)"
-                error_msg += f"\n  --general-compute        (search D and F series)"
-                error_msg += f"\n  --sku-pattern D#as_v5    (specific series pattern)"
+                error_msg += (
+                    "\n  --no-burstable           (search all non-burstable VMs)"
+                )
+                error_msg += "\n  --general-compute        (search D and F series)"
+                error_msg += "\n  --sku-pattern D#as_v5    (specific series pattern)"
             else:
-                error_msg += "\n\nTry using --no-burstable or --general-compute for more options"
+                error_msg += (
+                    "\n\nTry using --no-burstable or --general-compute for more options"
+                )
         logging.error(error_msg)
         sys.exit(1)
 
