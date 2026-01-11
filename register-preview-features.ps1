@@ -1,38 +1,64 @@
 # register-preview-features.ps1
-# Registers Azure preview features for a provider namespace
-# Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+# Registers/unregisters Azure preview features for a provider namespace
+# Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 #
 # Features:
 #   - Bulk registration: Registers all unregistered features in one run
+#   - Single feature operations: Enable, disable, or check specific features
 #   - Graceful error handling: Skips features that don't support self-registration
 #   - Progress tracking: Shows registration status for each feature
 #   - Export support: Save results to CSV for documentation
 #
 # Switches:
 #   -ProviderNamespace  Filter to specific provider (e.g., "Microsoft.Compute")
+#   -FeatureName        Target specific feature(s) by name (comma-separated or array)
+#   -CheckStatus        Only check and display status of features
+#   -Unregister         Unregister (disable) the specified feature(s)
 #   -ListOnly           List features without registering
 #   -UnregisteredOnly   Only show/process unregistered features
 #   -Force              Skip confirmation prompt
-#   -WhatIf             Show what would be registered
+#   -WhatIf             Show what would be registered/unregistered
 #
 # Examples:
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -Force
 #   pwsh register-preview-features.ps1 -ListOnly
 #   pwsh register-preview-features.ps1 -WhatIf
+#   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -CheckStatus
+#   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
+#   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath,EnableAcceleratedNetworking" -CheckStatus
 #
 # Requires: Azure PowerShell module (Az), Contributor/Owner role
 
 <#
 .SYNOPSIS
-    Lists and registers Azure preview features across all resource providers.
+    Lists, registers, or unregisters Azure preview features across resource providers.
 
 .DESCRIPTION
-    This script discovers all available Azure preview features and attempts to register
-    unregistered ones. Some features require Microsoft approval and will show as "Pending".
+    This script discovers Azure preview features and can:
+    - List all available features
+    - Register unregistered features (bulk or specific)
+    - Unregister (disable) specific features
+    - Check status of specific features
+    Some features require Microsoft approval and will show as "Pending".
 
 .PARAMETER ProviderNamespace
     Optional. Filter to specific provider namespace (e.g., "Microsoft.Compute").
-    If not specified, processes all providers.
+    Required when using -FeatureName.
+
+.PARAMETER FeatureName
+    Optional. Target specific feature(s) by name. Can be:
+    - Single feature: "AllowManaFastPath"
+    - Comma-separated: "AllowManaFastPath,EnableAcceleratedNetworking"
+    - Array: @("Feature1", "Feature2")
+    Requires -ProviderNamespace to be specified.
+
+.PARAMETER CheckStatus
+    Only check and display the registration status of features.
+    Does not make any changes.
+
+.PARAMETER Unregister
+    Unregister (disable) the specified feature(s).
+    Requires -ProviderNamespace and -FeatureName.
 
 .PARAMETER ListOnly
     Only list available features without registering them.
@@ -44,7 +70,7 @@
     Path to export results as CSV file.
 
 .PARAMETER WhatIf
-    Show what would be registered without actually registering.
+    Show what would be registered/unregistered without actually doing it.
 
 .EXAMPLE
     .\register-preview-features.ps1 -ListOnly
@@ -53,6 +79,18 @@
 .EXAMPLE
     .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute"
     Registers all unregistered Microsoft.Compute preview features.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -CheckStatus
+    Checks the registration status of AllowManaFastPath feature.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
+    Unregisters (disables) the AllowManaFastPath feature.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath"
+    Registers (enables) the AllowManaFastPath feature.
 
 .EXAMPLE
     .\register-preview-features.ps1 -UnregisteredOnly -ExportPath "features.csv"
@@ -76,6 +114,15 @@
 param(
     [Parameter(Mandatory = $false)]
     [string]$ProviderNamespace,
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$FeatureName,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$CheckStatus,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$Unregister,
 
     [Parameter(Mandatory = $false)]
     [switch]$ListOnly,
@@ -199,10 +246,82 @@ function Register-PreviewFeature {
     }
 }
 
+function Unregister-PreviewFeature {
+    param(
+        [string]$FeatureName,
+        [string]$ProviderNamespace
+    )
+
+    try {
+        $result = Unregister-AzProviderFeature -FeatureName $FeatureName -ProviderNamespace $ProviderNamespace
+        return @{
+            FeatureName       = $FeatureName
+            ProviderNamespace = $ProviderNamespace
+            State             = $result.RegistrationState
+            Success           = $true
+            Error             = $null
+        }
+    }
+    catch {
+        $errorMsg = $_.Exception.Message
+        if ($errorMsg -match "does not support unregistration" -or
+            $errorMsg -match "FeatureUnregistrationUnsupported" -or
+            $errorMsg -match "cannot be unregistered") {
+            return @{
+                FeatureName       = $FeatureName
+                ProviderNamespace = $ProviderNamespace
+                State             = "Unsupported"
+                Success           = $false
+                Error             = "Feature does not support unregistration"
+            }
+        }
+        return @{
+            FeatureName       = $FeatureName
+            ProviderNamespace = $ProviderNamespace
+            State             = "Failed"
+            Success           = $false
+            Error             = $errorMsg
+        }
+    }
+}
+
+function Get-FeatureStatus {
+    param(
+        [string]$FeatureName,
+        [string]$ProviderNamespace
+    )
+
+    try {
+        $feature = Get-AzProviderFeature -FeatureName $FeatureName -ProviderNamespace $ProviderNamespace -ErrorAction Stop
+        return @{
+            FeatureName       = $FeatureName
+            ProviderNamespace = $ProviderNamespace
+            State             = $feature.RegistrationState
+            Success           = $true
+            Error             = $null
+        }
+    }
+    catch {
+        return @{
+            FeatureName       = $FeatureName
+            ProviderNamespace = $ProviderNamespace
+            State             = "NotFound"
+            Success           = $false
+            Error             = $_.Exception.Message
+        }
+    }
+}
+
 # Main script execution
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Azure Preview Features Registration  " -ForegroundColor Cyan
+if ($Unregister) {
+    Write-Host "  Azure Preview Features Unregistration" -ForegroundColor Cyan
+} elseif ($CheckStatus) {
+    Write-Host "  Azure Preview Features Status Check  " -ForegroundColor Cyan
+} else {
+    Write-Host "  Azure Preview Features Registration  " -ForegroundColor Cyan
+}
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -211,7 +330,151 @@ if (-not (Test-AzureConnection)) {
     exit 1
 }
 
-# Get features
+# Parse FeatureName if provided as comma-separated string
+if ($FeatureName -and $FeatureName.Count -eq 1 -and $FeatureName[0] -match ',') {
+    $FeatureName = $FeatureName[0] -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+}
+
+# Handle specific feature operations (CheckStatus, Unregister, or single feature registration)
+if ($FeatureName) {
+    if (-not $ProviderNamespace) {
+        Write-Log "ERROR: -ProviderNamespace is required when using -FeatureName" "ERROR"
+        exit 1
+    }
+
+    $results = @()
+    foreach ($fname in $FeatureName) {
+        $featureId = "$ProviderNamespace/$fname"
+
+        if ($CheckStatus) {
+            Write-Log "Checking status: $featureId" "INFO"
+            $result = Get-FeatureStatus -FeatureName $fname -ProviderNamespace $ProviderNamespace
+            $results += [PSCustomObject]@{
+                ProviderNamespace = $ProviderNamespace
+                FeatureName       = $fname
+                State             = $result.State
+                Success           = $result.Success
+                Error             = $result.Error
+            }
+            $stateColor = switch ($result.State) {
+                "Registered"   { "Green" }
+                "Registering"  { "Yellow" }
+                "Unregistered" { "Gray" }
+                "NotRegistered" { "Gray" }
+                "Unregistering" { "Yellow" }
+                "Pending"      { "Yellow" }
+                "NotFound"     { "Red" }
+                default        { "White" }
+            }
+            Write-Host "  $featureId : " -NoNewline -ForegroundColor White
+            Write-Host "$($result.State)" -ForegroundColor $stateColor
+            if ($result.Error) {
+                Write-Host "    Error: $($result.Error)" -ForegroundColor Red
+            }
+        }
+        elseif ($Unregister) {
+            if ($WhatIfPreference) {
+                Write-Log "WhatIf: Would unregister $featureId" "INFO"
+                $results += [PSCustomObject]@{
+                    ProviderNamespace = $ProviderNamespace
+                    FeatureName       = $fname
+                    State             = "WhatIf"
+                    Success           = $true
+                    Error             = $null
+                }
+            }
+            else {
+                # Check current status first
+                $currentStatus = Get-FeatureStatus -FeatureName $fname -ProviderNamespace $ProviderNamespace
+                if ($currentStatus.State -eq "Unregistered" -or $currentStatus.State -eq "NotRegistered") {
+                    Write-Log "$featureId is already unregistered" "INFO"
+                    $results += [PSCustomObject]@{
+                        ProviderNamespace = $ProviderNamespace
+                        FeatureName       = $fname
+                        State             = $currentStatus.State
+                        Success           = $true
+                        Error             = "Already unregistered"
+                    }
+                    continue
+                }
+
+                Write-Log "Unregistering: $featureId" "INFO"
+                $result = Unregister-PreviewFeature -FeatureName $fname -ProviderNamespace $ProviderNamespace
+                $results += [PSCustomObject]@{
+                    ProviderNamespace = $ProviderNamespace
+                    FeatureName       = $fname
+                    State             = $result.State
+                    Success           = $result.Success
+                    Error             = $result.Error
+                }
+                if ($result.Success) {
+                    Write-Log "  -> $($result.State)" "SUCCESS"
+                }
+                else {
+                    Write-Log "  -> Failed: $($result.Error)" "ERROR"
+                }
+            }
+        }
+        else {
+            # Register specific feature
+            if ($WhatIfPreference) {
+                Write-Log "WhatIf: Would register $featureId" "INFO"
+                $results += [PSCustomObject]@{
+                    ProviderNamespace = $ProviderNamespace
+                    FeatureName       = $fname
+                    State             = "WhatIf"
+                    Success           = $true
+                    Error             = $null
+                }
+            }
+            else {
+                # Check current status first
+                $currentStatus = Get-FeatureStatus -FeatureName $fname -ProviderNamespace $ProviderNamespace
+                if ($currentStatus.State -eq "Registered") {
+                    Write-Log "$featureId is already registered" "INFO"
+                    $results += [PSCustomObject]@{
+                        ProviderNamespace = $ProviderNamespace
+                        FeatureName       = $fname
+                        State             = $currentStatus.State
+                        Success           = $true
+                        Error             = "Already registered"
+                    }
+                    continue
+                }
+
+                Write-Log "Registering: $featureId" "INFO"
+                $result = Register-PreviewFeature -FeatureName $fname -ProviderNamespace $ProviderNamespace
+                $results += [PSCustomObject]@{
+                    ProviderNamespace = $ProviderNamespace
+                    FeatureName       = $fname
+                    State             = $result.State
+                    Success           = $result.Success
+                    Error             = $result.Error
+                }
+                if ($result.Success) {
+                    Write-Log "  -> $($result.State)" "SUCCESS"
+                }
+                else {
+                    Write-Log "  -> Failed: $($result.Error)" "ERROR"
+                }
+            }
+        }
+    }
+
+    # Summary for specific feature operations
+    Write-Host ""
+    Write-Host "Results:" -ForegroundColor Cyan
+    $results | Format-Table -Property ProviderNamespace, FeatureName, State, Success -AutoSize
+
+    if ($ExportPath) {
+        $results | Export-Csv -Path $ExportPath -NoTypeInformation
+        Write-Log "Results exported to: $ExportPath" "SUCCESS"
+    }
+
+    exit 0
+}
+
+# Bulk mode: Get all features
 $features = Get-AllPreviewFeatures -Namespace $ProviderNamespace -UnregisteredOnly:$UnregisteredOnly
 
 if ($features.Count -eq 0) {
