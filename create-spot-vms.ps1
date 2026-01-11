@@ -1,18 +1,49 @@
 # create-spot-vms.ps1
 # Creates Azure Spot VMs with full ARM64 and latest Ubuntu support
-# Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+# Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 #
 # Features:
 #   - Full ARM64 support: ARM VMs (D*p*_v5, D*p*_v6) auto-detected
 #   - Latest Ubuntu minimal: Auto-selects newest Ubuntu (25.10) with minimal image
 #   - Architecture detection: Automatically uses ARM64 or x64 image based on VM size
 #   - Spot pricing: Creates cost-effective spot instances with eviction handling
+#   - NAT Gateway: Share one public IP across multiple VMs for cost savings
 #
-# Switches:
-#   -UseLTS        Use LTS Ubuntu (24.04) instead of latest (25.10)
-#   -PreferServer  Use full server image instead of minimal
+# Key Switches:
+#   -UseLTS              Use LTS Ubuntu (24.04) instead of latest (25.10)
+#   -PreferServer        Use full server image instead of minimal
+#   -NoPublicIP          Do not create public IP for VM (requires NAT Gateway or jumpbox)
+#   -UseNatGateway       Create/use NAT Gateway for outbound internet (requires -NoPublicIP)
+#   -ForceOverwrite      Overwrite existing resources without prompting
 #
-# Examples:
+# NAT Gateway Usage:
+#   NAT Gateway provides outbound internet connectivity for VMs without individual public IPs.
+#   All VMs in the same subnet share one public IP for outbound traffic.
+#   Cost-effective for 10+ VMs per region (~$37/month vs ~$3.65/VM/month for public IPs).
+#
+#   Creating VMs with NAT Gateway:
+#     # First VM creates VNet, Subnet, NAT Gateway
+#     pwsh create-spot-vms.ps1 -Location eastus -VMName worker1 -ResourceGroupName WorkersRG -NoPublicIP -UseNatGateway
+#     # Subsequent VMs in same RG reuse existing NAT Gateway
+#     pwsh create-spot-vms.ps1 -Location eastus -VMName worker2 -ResourceGroupName WorkersRG -NoPublicIP -UseNatGateway
+#
+#   What gets created:
+#     - VNet (10.0.0.0/16) with Subnet (10.0.0.0/24)
+#     - NAT Gateway (Standard SKU) with Public IP
+#     - VMs with private IPs only (10.0.0.4, 10.0.0.5, etc.)
+#
+#   Deleting NAT Gateway:
+#     # Easiest: delete entire Resource Group
+#     Remove-AzResourceGroup -Name WorkersRG -Force
+#
+#     # Manual: must disassociate NAT Gateway from subnet first
+#     $vnet = Get-AzVirtualNetwork -ResourceGroupName WorkersRG -Name MyNet
+#     Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name MySubnet -AddressPrefix "10.0.0.0/24" -NatGateway $null
+#     $vnet | Set-AzVirtualNetwork
+#     Remove-AzNatGateway -ResourceGroupName WorkersRG -Name MyNet-natgw -Force
+#     Remove-AzPublicIpAddress -ResourceGroupName WorkersRG -Name MyNet-natgw-pip -Force
+#
+# Basic Examples:
 #   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName myvm
 #   pwsh create-spot-vms.ps1 -Location centralindia -VMSize Standard_D64pls_v6 -VMName arm-vm
 #
@@ -928,14 +959,20 @@ try {
 }
 
 # ==== NAT GATEWAY (if requested) ====
+# NAT Gateway provides outbound internet connectivity for VMs without individual public IPs.
+# All VMs in the subnet share one public IP (~$37/month total vs ~$3.65/VM/month).
+# Created resources: {NetworkName}-natgw (NAT Gateway), {NetworkName}-natgw-pip (Public IP)
+# To delete: must disassociate from subnet first, then delete NAT GW, then delete Public IP.
+# See script header for deletion commands.
     if ($NoPublicIP -and $UseNatGateway) {
         $natGwName = "$NetworkName-natgw"
         $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
 
         if (-not $natGw) {
             try {
-                Write-Log "Creating NAT Gateway: $natGwName"
+                Write-Log "Creating NAT Gateway: $natGwName (this may take 1-2 minutes)"
 
+                # Step 1: Create Public IP for NAT Gateway (Standard SKU required)
                 $pipParams = @{
                     Name = "$natGwName-pip"
                     ResourceGroupName = $ResourceGroupName
@@ -946,7 +983,9 @@ try {
                 }
                 if ($ForceOverwrite) { $pipParams.Force = $true }
                 $natPip = New-AzPublicIpAddress @pipParams
+                Write-Log "  Created NAT Gateway Public IP: $($natPip.IpAddress)" "DEBUG"
 
+                # Step 2: Create NAT Gateway (Standard SKU, 10 min idle timeout)
                 $natGwParams = @{
                     ResourceGroupName = $ResourceGroupName
                     Name = $natGwName
@@ -959,21 +998,28 @@ try {
                 if ($ForceOverwrite) { $natGwParams.Force = $true }
                 $natGw = New-AzNatGateway @natGwParams
 
+                # Step 3: Associate NAT Gateway with subnet (all VMs in subnet will use it)
                 $subnet = Get-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName
                 Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name $SubnetName -AddressPrefix $subnet.AddressPrefix -NatGateway $natGw | Out-Null
                 $vnet | Set-AzVirtualNetwork | Out-Null
-                Write-Log "NAT Gateway created and associated with subnet" "SUCCESS"
+                Write-Log "NAT Gateway created and associated with subnet: $SubnetName" "SUCCESS"
+                Write-Log "  All VMs in this subnet will share outbound IP: $($natPip.IpAddress)" "INFO"
             } catch {
                 Write-Log "Error creating/configuring NAT Gateway: $($_.Exception.Message)" "ERROR"
-                # Don't fail the whole script, but warn
+                Write-Log "  VMs may not have outbound internet connectivity" "WARN"
+                # Don't fail the whole script - VM creation may still succeed
             }
         } else {
-            Write-Log "Using existing NAT Gateway: $natGwName"
+            # NAT Gateway already exists (created by previous VM in same RG)
+            $existingPip = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name "$natGwName-pip" -ErrorAction SilentlyContinue
+            $pipAddr = if ($existingPip) { $existingPip.IpAddress } else { "(unknown)" }
+            Write-Log "Using existing NAT Gateway: $natGwName (outbound IP: $pipAddr)"
         }
     } elseif ($NoPublicIP) {
     Write-Log "WARNING: No public IP and no NAT Gateway - VM will have no outbound internet!" "WARN"
+    Write-Log "  Add -UseNatGateway to create NAT Gateway for outbound connectivity" "WARN"
 } else {
-    Write-Log "Skipping NAT Gateway creation (UseNatGateway not specified)" "INFO"
+    Write-Log "Skipping NAT Gateway (UseNatGateway not specified)" "DEBUG"
 }
 
 # ==== CREDENTIALS ====
