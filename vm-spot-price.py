@@ -1209,6 +1209,14 @@ def main() -> None:
         series_pattern: str = args.series_pattern
         if not series_pattern:
             series_pattern = sku_pattern
+
+        # Early validation: warn if using default B-series pattern with cpu > 32
+        if sku_pattern == DEFAULT_SEARCH_VMPATTERN and args.cpu > 32:
+            logging.warning(
+                f"B-series VMs max out at 32 vCPUs. Requested: {args.cpu} cores.\n"
+                f"Consider using --no-burstable, --general-compute, or --sku-pattern D#as_v5"
+            )
+
         sku: str = sku_pattern.replace("#", str(args.cpu))
         series: str = series_pattern.replace("#", "").replace("_", "")
         vm_sizes_list.append((sku, series))
@@ -1338,7 +1346,19 @@ def main() -> None:
         session.close()
 
     if not table_data:
-        logging.error("No pricing data found for the specified criteria")
+        error_msg = "No pricing data found for the specified criteria"
+        # Provide helpful suggestions if using default B-series pattern with high core count
+        if args.sku_pattern == DEFAULT_SEARCH_VMPATTERN and not args.vm_sizes:
+            sku = args.sku_pattern.replace("#", str(args.cpu))
+            error_msg += f"\n\nSearched for: {sku}"
+            if args.cpu > 32:
+                error_msg += f"\n\nNote: B-series VMs max out at 32 vCPUs. For {args.cpu} cores, try:"
+                error_msg += f"\n  --no-burstable           (search all non-burstable VMs)"
+                error_msg += f"\n  --general-compute        (search D and F series)"
+                error_msg += f"\n  --sku-pattern D#as_v5    (specific series pattern)"
+            else:
+                error_msg += "\n\nTry using --no-burstable or --general-compute for more options"
+        logging.error(error_msg)
         sys.exit(1)
 
     # Sort by price (element [1] is retail price)
