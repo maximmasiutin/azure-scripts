@@ -319,7 +319,12 @@ az network list-usages --location eastus --query "[?contains(name.value, 'Standa
 
 ### NAT Gateway Architecture (Cost-Effective Alternative)
 
-For deployments with many VMs, using NAT Gateway instead of individual Public IPs can significantly reduce costs:
+For deployments with many VMs, using NAT Gateway instead of individual Public IPs can significantly reduce costs.
+
+**What is NAT Gateway?**
+- Azure NAT Gateway provides outbound internet connectivity for VMs without individual public IPs
+- All VMs in the subnet share one public IP for outbound traffic
+- Inbound connections are not possible (no public IP on VMs) - use jumpbox or VPN for SSH
 
 **Architecture:**
 ```
@@ -331,43 +336,119 @@ Internet
     v              + $0.045/GB data processed
 [VNet/Subnet]
     |
-    +-- VM1 (no public IP)
-    +-- VM2 (no public IP)
+    +-- VM1 (private IP: 10.0.0.4)
+    +-- VM2 (private IP: 10.0.0.5)
     +-- ...
-    +-- VM20 (no public IP)
+    +-- VM20 (private IP: 10.0.0.23)
     |
-[Jumpbox VM] <-- 1 Public IP for SSH access
+[Jumpbox VM] <-- 1 Public IP for SSH access (optional)
 ```
 
-**Cost Comparison (20+ VMs):**
-| Approach | Monthly Cost |
-|----------|-------------|
-| 21 Standard Public IPs | ~$77/month |
-| 1 NAT Gateway + 1 Jumpbox IP | ~$37/month + data costs |
+**Cost Comparison:**
+| VMs | Individual Public IPs | NAT Gateway | Savings |
+|-----|----------------------|-------------|---------|
+| 5 VMs | ~$18/month | ~$37/month | -$19 (NAT more expensive) |
+| 10 VMs | ~$37/month | ~$37/month | Break-even |
+| 20 VMs | ~$73/month | ~$37/month | +$36/month |
+| 50 VMs | ~$183/month | ~$37/month | +$146/month |
 
-**Implementation:**
+NAT Gateway becomes cost-effective at 10+ VMs per region.
+
+**Creating VMs with NAT Gateway:**
+
 ```powershell
-# Create VMs with NAT Gateway (no individual public IPs)
-pwsh ./create-spot-vms.ps1 -NoPublicIP -UseNatGateway -VMName "worker1"
+# Single VM with NAT Gateway
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" `
+    -VMName "worker1" -ResourceGroupName "MyRG" -NoPublicIP -UseNatGateway
 
-# Create one Jumpbox VM with public IP for SSH access
-pwsh ./create-spot-vms.ps1 -VMName "jumpbox" -VMSize "Standard_B1s"
+# Multiple VMs sharing the same NAT Gateway (same ResourceGroup = same VNet = shared NAT)
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D64as_v5" `
+    -VMName "worker1" -ResourceGroupName "WorkersRG" -NoPublicIP -UseNatGateway
+
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D64as_v5" `
+    -VMName "worker2" -ResourceGroupName "WorkersRG" -NoPublicIP -UseNatGateway
+
+# First VM creates: VNet, Subnet, NAT Gateway, NAT Gateway Public IP
+# Subsequent VMs in same RG reuse existing NAT Gateway
 ```
 
-**SSH Access Pattern:**
+**What gets created:**
+```
+ResourceGroup (e.g., WorkersRG)
+  |
+  +-- MyNet (VNet: 10.0.0.0/16)
+  |     +-- MySubnet (10.0.0.0/24) --> associated with NAT Gateway
+  |
+  +-- MyNet-natgw (NAT Gateway, Standard SKU)
+  +-- MyNet-natgw-pip (Public IP for NAT Gateway)
+  |
+  +-- worker1 (VM, private IP only)
+  +-- worker1-nic (NIC)
+  +-- worker1-osdisk (OS Disk)
+  |
+  +-- worker2 (VM, private IP only)
+  +-- worker2-nic (NIC)
+  +-- worker2-osdisk (OS Disk)
+```
+
+**Deleting NAT Gateway and VMs:**
+
+```powershell
+# Delete entire Resource Group (recommended - cleanest)
+Remove-AzResourceGroup -Name "WorkersRG" -Force
+
+# Or delete individual resources manually:
+# 1. Delete VMs first
+Remove-AzVM -ResourceGroupName "WorkersRG" -Name "worker1" -Force
+Remove-AzVM -ResourceGroupName "WorkersRG" -Name "worker2" -Force
+
+# 2. Delete NICs
+Remove-AzNetworkInterface -ResourceGroupName "WorkersRG" -Name "worker1-nic" -Force
+Remove-AzNetworkInterface -ResourceGroupName "WorkersRG" -Name "worker2-nic" -Force
+
+# 3. Delete OS disks
+Remove-AzDisk -ResourceGroupName "WorkersRG" -DiskName "worker1-osdisk" -Force
+Remove-AzDisk -ResourceGroupName "WorkersRG" -DiskName "worker2-osdisk" -Force
+
+# 4. Disassociate NAT Gateway from subnet before deletion
+$vnet = Get-AzVirtualNetwork -ResourceGroupName "WorkersRG" -Name "MyNet"
+Set-AzVirtualNetworkSubnetConfig -VirtualNetwork $vnet -Name "MySubnet" `
+    -AddressPrefix "10.0.0.0/24" -NatGateway $null | Out-Null
+$vnet | Set-AzVirtualNetwork | Out-Null
+
+# 5. Delete NAT Gateway
+Remove-AzNatGateway -ResourceGroupName "WorkersRG" -Name "MyNet-natgw" -Force
+
+# 6. Delete NAT Gateway Public IP
+Remove-AzPublicIpAddress -ResourceGroupName "WorkersRG" -Name "MyNet-natgw-pip" -Force
+
+# 7. Delete VNet (if no longer needed)
+Remove-AzVirtualNetwork -ResourceGroupName "WorkersRG" -Name "MyNet" -Force
+```
+
+**SSH Access Without Public IPs:**
+
+Option 1: Jumpbox VM
+```powershell
+# Create jumpbox with public IP in same VNet
+pwsh ./create-spot-vms.ps1 -VMName "jumpbox" -VMSize "Standard_B1s" `
+    -ResourceGroupName "WorkersRG" -Location "eastus"
+```
 ```bash
-# SSH to jumpbox first
+# SSH to jumpbox, then to workers
 ssh azureuser@<jumpbox-public-ip>
-
-# From jumpbox, SSH to workers via private IPs
 ssh azureuser@10.0.0.5  # worker1 private IP
-ssh azureuser@10.0.0.6  # worker2 private IP
 ```
+
+Option 2: Azure Bastion (managed service, ~$140/month)
+
+Option 3: VPN Gateway (for on-premises connectivity)
 
 **Limitations:**
 - NAT Gateway is region-specific; multi-region deployments need multiple NAT Gateways
-- 5 regions x $33/month = $165/month (may exceed individual IP costs)
-- Jumpbox becomes single point of entry (consider availability)
+- No inbound connectivity - VMs cannot be reached from internet directly
+- Data processing charges: $0.045/GB for outbound traffic through NAT Gateway
+- 5 regions x $37/month = $185/month (may exceed individual IP costs for few VMs per region)
 
 ### Security Type Conflicts (PropertyChangeNotAllowed)
 
