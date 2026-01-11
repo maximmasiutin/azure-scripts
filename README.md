@@ -144,6 +144,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Resiliency**: Auto-detects supported regions and blacklists specific VM sizes if unavailable. Robust error handling ensures stability.
    - **Clean Logs**: Automatically suppresses Azure PowerShell breaking change warnings to reduce noise.
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
+   - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
 7. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
@@ -370,6 +371,13 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D64as_v5" `
 
 # First VM creates: VNet, Subnet, NAT Gateway, NAT Gateway Public IP
 # Subsequent VMs in same RG reuse existing NAT Gateway
+
+# Infrastructure-only mode (for multi-worker orchestration)
+# Create shared infrastructure first, then spawn workers in parallel
+pwsh ./create-spot-vms.ps1 -Location "eastus" -ResourceGroupName "WorkersRG" `
+    -UseNatGateway -NoPublicIP -CreateInfrastructureOnly
+# Returns JSON: {"Success":true,"ResourceGroupName":"WorkersRG","VNetName":"MyNet",
+#   "NatGatewayName":"MyNet-natgw","NatGatewayPublicIP":"20.xx.xx.xx",...}
 ```
 
 **What gets created:**
@@ -533,12 +541,82 @@ python vm-spot-price.py --cpu 64 --no-burstable --region eastus --exclude-sku-pa
 
 See [Microsoft Learn - Set up preview features](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/preview-features) for more details.
 
+### Preview Feature Management Scripts
+
+Two scripts are available for managing Azure preview features:
+
+**1. register-preview-features.ps1** (Azure PowerShell, full-featured)
+```powershell
+# List all preview features
+pwsh register-preview-features.ps1 -ListOnly
+
+# Register all unregistered Microsoft.Compute features
+pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -Force
+
+# Check status of specific feature
+pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -FeatureName "AutomaticZoneRebalancing" -CheckStatus
+
+# Unregister a problematic feature
+pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -FeatureName "AutomaticZoneRebalancing" -Unregister
+
+# Export to CSV for documentation
+pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -ListOnly -ExportPath "features.csv"
+```
+
+**2. manage-compute-features.ps1** (Azure CLI, simpler, with backup/restore)
+
+Location: `C:\q\linux-fishtest-scripts\manage-compute-features.ps1`
+
+```powershell
+# List all Microsoft.Compute features with summary
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action List
+
+# Save current state to JSON (for backup before changes)
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save
+# Creates: compute-features-20260111-143022.json
+
+# Save to specific file
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save -OutputFile "my-backup.json"
+
+# Enable all features except problematic ones (default excludes AutomaticZoneRebalancing)
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll
+
+# Enable all except multiple features
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll -ExcludeFeatures @("AutomaticZoneRebalancing", "SomeOther")
+
+# Restore features to saved state (register/unregister as needed)
+pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Restore -InputFile "my-backup.json"
+```
+
+**Workflow for Safe Feature Testing:**
+```powershell
+# 1. Save current state before experimenting
+pwsh manage-compute-features.ps1 -Action Save -OutputFile "before-testing.json"
+
+# 2. Enable preview features you want to test
+az feature register --namespace Microsoft.Compute --name SomeNewFeature
+
+# 3. Test your workloads...
+
+# 4. If issues occur, restore to known-good state
+pwsh manage-compute-features.ps1 -Action Restore -InputFile "before-testing.json"
+```
+
+**Key Differences:**
+| Feature | register-preview-features.ps1 | manage-compute-features.ps1 |
+|---------|------------------------------|----------------------------|
+| Backend | Azure PowerShell (Az module) | Azure CLI (az) |
+| Namespaces | All providers | Microsoft.Compute only |
+| State backup | CSV export | JSON backup/restore |
+| Bulk enable | Yes | Yes (with exclusions) |
+| Restore | No | Yes (diff-based restore) |
+
 ## Security
 
 This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECURITY.md) for details.
 
 ## License 
 
-Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 
 Individual script licenses may vary - check script headers for specific licensing information.
