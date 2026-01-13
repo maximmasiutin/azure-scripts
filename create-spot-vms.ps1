@@ -924,6 +924,56 @@ if (-not $SkipQuotaCheck) {
     }
 }
 
+# ==== INFRASTRUCTURE HANDLING ====
+# When UseNatGateway is set (without CreateInfrastructureOnly), infrastructure was pre-created
+# by the launcher script. Just verify it exists and get references - don't create or modify.
+if ($UseNatGateway -and -not $CreateInfrastructureOnly) {
+    Write-Log "NAT Gateway mode: using pre-created infrastructure (skipping creation)"
+
+    # Verify RG exists
+    $rg = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
+    if (-not $rg) {
+        Write-Log "Resource group '$ResourceGroupName' not found - infrastructure must be pre-created for NAT Gateway mode" "ERROR"
+        return @{ Success = $false; Error = "Resource group not found. Run launcher with -CreateInfrastructureOnly first." }
+    }
+    Write-Log "  Resource group: $ResourceGroupName" "DEBUG"
+
+    # Verify VNet exists
+    $vnet = Get-AzVirtualNetwork -Name $NetworkName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
+    if (-not $vnet) {
+        Write-Log "Virtual network '$NetworkName' not found in $ResourceGroupName" "ERROR"
+        return @{ Success = $false; Error = "VNet not found. Run launcher with -CreateInfrastructureOnly first." }
+    }
+    Write-Log "  VNet: $NetworkName" "DEBUG"
+
+    # Get subnet ID
+    $subnetId = ($vnet.Subnets | Where-Object { $_.Name -eq $SubnetName }).Id
+    if (-not $subnetId) {
+        if ($vnet.Subnets.Count -gt 0) {
+            $subnetId = $vnet.Subnets[0].Id
+            Write-Log "  Subnet: $($vnet.Subnets[0].Name) (first available)" "DEBUG"
+        } else {
+            Write-Log "No subnets found in VNet '$NetworkName'" "ERROR"
+            return @{ Success = $false; Error = "No subnets found. Run launcher with -CreateInfrastructureOnly first." }
+        }
+    } else {
+        Write-Log "  Subnet: $SubnetName" "DEBUG"
+    }
+
+    # Verify NAT Gateway exists
+    $natGwName = "$NetworkName-natgw"
+    $natGw = Get-AzNatGateway -ResourceGroupName $ResourceGroupName -Name $natGwName -ErrorAction SilentlyContinue
+    if (-not $natGw) {
+        Write-Log "NAT Gateway '$natGwName' not found in $ResourceGroupName" "ERROR"
+        return @{ Success = $false; Error = "NAT Gateway not found. Run launcher with -CreateInfrastructureOnly first." }
+    }
+    $existingPip = Get-AzPublicIpAddress -ResourceGroupName $ResourceGroupName -Name "$natGwName-pip" -ErrorAction SilentlyContinue
+    $pipAddr = if ($existingPip) { $existingPip.IpAddress } else { "(unknown)" }
+    Write-Log "  NAT Gateway: $natGwName (outbound IP: $pipAddr)" "DEBUG"
+
+} else {
+    # Standard mode: create infrastructure as needed
+
 # ==== RESOURCE GROUP ====
 Write-Log "Checking resource group..."
 $rg = Get-AzResourceGroup -Name $ResourceGroupName -ErrorAction SilentlyContinue
@@ -1152,6 +1202,8 @@ try {
 } else {
     Write-Log "Skipping NAT Gateway (UseNatGateway not specified)" "DEBUG"
 }
+
+} # End of else block for standard infrastructure creation
 
 # ==== INFRASTRUCTURE-ONLY MODE ====
 # If CreateInfrastructureOnly is set, output JSON with created resources and exit
