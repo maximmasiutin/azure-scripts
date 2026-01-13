@@ -15,6 +15,7 @@ Examples:
   python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
   python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2" --return-region
   python vm-spot-price.py --cpu 64 --no-burstable --region eastus
+  python vm-spot-price.py --all-vm-series --region eastus --cpu 4
 """
 
 import json
@@ -50,7 +51,7 @@ def validate_api_url(url: str) -> bool:
         if parsed.scheme != "https":
             return False
         # Must be from allowed domain
-        if parsed.netloc not in ALLOWED_API_DOMAINS:
+        if parsed.hostname not in ALLOWED_API_DOMAINS:
             return False
         return True
     except Exception:
@@ -694,7 +695,8 @@ def main() -> None:
     parser.add_argument(
         "--vm-sizes",
         type=str,
-        help="Comma-separated list of VM sizes (e.g., D4pls_v5,D4ps_v5,F4s_v2). Overrides --sku-pattern and --series-pattern",
+        help="Comma-separated VM sizes (e.g., D4pls_v5,D4ps_v5). "
+        "Overrides --sku-pattern and --series-pattern",
     )
     parser.add_argument(
         "--non-spot", action="store_true", help="Only return non-spot instances"
@@ -818,6 +820,12 @@ def main() -> None:
         default=20,
         help="Number of results to display (default: 20, use 0 for all)",
     )
+    parser.add_argument(
+        "--all-vm-series",
+        action="store_true",
+        help="Query all VM series without filters. Only region and spot/non-spot "
+        "filters apply. Use --cpu for client-side core filtering.",
+    )
 
     args: Namespace = parser.parse_args()
 
@@ -874,6 +882,9 @@ def main() -> None:
             sys.exit(1)
         if args.vm_sizes:
             logging.error("Cannot use --vm-sizes with per-core mode flags")
+            sys.exit(1)
+        if getattr(args, "all_vm_series", False):
+            logging.error("Cannot use --all-vm-series with per-core mode flags")
             sys.exit(1)
 
     # Build excluded regions set
@@ -1012,7 +1023,10 @@ def main() -> None:
                     )
                     print("Fetching all VM pricing data (single query)...")
 
-                query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
+                query = (
+                    "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' "
+                    "and serviceFamily eq 'Compute'"
+                )
                 if not non_spot:
                     query += SPOT_FILTER_CLAUSE
                 # Add region filter if specified
@@ -1081,10 +1095,11 @@ def main() -> None:
                             flush=True,
                         )
 
-                    query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
-                    query += (
-                        f" and productName eq 'Virtual Machines {series_name} Series'"
+                    query = (
+                        "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' "
+                        "and serviceFamily eq 'Compute'"
                     )
+                    query += f" and productName eq 'Virtual Machines {series_name} Series'"
                     if not non_spot:
                         query += SPOT_FILTER_CLAUSE
                     # Add region filter if specified
@@ -1207,6 +1222,182 @@ def main() -> None:
                     disable_numparse=True,
                 )
             )
+        sys.exit(0)
+
+    # All VM series mode - query without series filter, client-side filtering
+    if getattr(args, "all_vm_series", False):
+        api_url = "https://prices.azure.com/api/retail/prices"
+        session = create_resilient_session()
+        max_pages = 300  # Large limit for unfiltered queries
+
+        all_series_data: List[List[Any]] = []
+
+        try:
+            if not return_region:
+                print("Querying all VM series (no series filter)...")
+
+            # Build minimal query - no productName, no armSkuName
+            query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
+            if not non_spot:
+                query += SPOT_FILTER_CLAUSE
+            # Add region filter if specified
+            if args.region:
+                regions = [r.strip() for r in args.region.split(",") if r.strip()]
+                if len(regions) == 1:
+                    query += f" and armRegionName eq '{regions[0]}'"
+                elif len(regions) > 1:
+                    region_filter = " or ".join(
+                        [f"armRegionName eq '{r}'" for r in regions]
+                    )
+                    query += f" and ({region_filter})"
+
+            logging.debug(f"Query: {query}")
+
+            if args.dry_run:
+                print("DRY RUN - All VM Series Query:")
+                print(f"URL: {api_url}")
+                print(f"Filter: {query}")
+                sys.exit(0)
+
+            json_data = fetch_pricing_data(
+                api_url, {"$filter": query}, session, verbose=args.verbose
+            )
+            items = json_data.get("Items", [])
+            next_page = json_data.get("NextPageLink", "")
+            page_count = 1
+
+            while next_page and page_count < max_pages:
+                if not return_region:
+                    print(f"\rFetching page {page_count + 1}...", end="", flush=True)
+                try:
+                    json_data = fetch_pricing_data(
+                        next_page, {}, session, verbose=args.verbose
+                    )
+                    items.extend(json_data.get("Items", []))
+                    next_page = json_data.get("NextPageLink", "")
+                    page_count += 1
+                except Exception:
+                    break
+
+            if not return_region:
+                print(f"\rFetched {len(items)} items from {page_count} pages")
+
+            # Client-side filtering
+            cpu_filter = args.cpu if args.cpu != int(DEFAULT_SEARCH_VMSIZE) else None
+
+            for item in items:
+                try:
+                    arm_sku_name: str = item.get("armSkuName", "")
+                    retail_price: float = float(item.get("retailPrice", 0.0))
+                    unit_of_measure: str = item.get("unitOfMeasure", "")
+                    arm_region_name: str = item.get("armRegionName", "")
+                    meter_name: str = item.get("meterName", "")
+                    product_name: str = item.get("productName", "")
+
+                    if not arm_sku_name or retail_price <= 0:
+                        continue
+
+                    # Filter Windows if only Linux requested
+                    if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
+                        if "Windows" in product_name:
+                            continue
+
+                    if non_spot and "Spot" in meter_name:
+                        continue
+                    if not low_priority and "Low Priority" in meter_name:
+                        continue
+
+                    # Filter by CPU count if specified
+                    if cpu_filter is not None:
+                        cores = extract_cores_from_sku(arm_sku_name)
+                        if cores != cpu_filter:
+                            continue
+
+                    # Filter ARM VMs if --exclude-arm is set
+                    if getattr(args, "exclude_arm", False) and is_arm_vm(arm_sku_name):
+                        continue
+
+                    # Filter excluded regions
+                    if arm_region_name.lower() in excluded_regions:
+                        continue
+
+                    # Filter excluded VM sizes
+                    normalized_sku = arm_sku_name.replace("Standard_", "").lower()
+                    if normalized_sku in excluded_vm_sizes:
+                        continue
+
+                    # Filter excluded SKU patterns
+                    if excluded_sku_patterns:
+                        skip = False
+                        for pattern in excluded_sku_patterns:
+                            if pattern.match(normalized_sku):
+                                skip = True
+                                break
+                        if skip:
+                            continue
+
+                    all_series_data.append(
+                        [
+                            arm_sku_name,
+                            retail_price,
+                            unit_of_measure,
+                            arm_region_name,
+                            meter_name,
+                            product_name,
+                        ]
+                    )
+                except (ValueError, TypeError):
+                    continue
+
+        except Exception as e:
+            logging.error(f"Failed to fetch pricing data: {e}")
+            sys.exit(1)
+        finally:
+            session.close()
+
+        if not all_series_data:
+            logging.error("No pricing data found for the specified criteria")
+            sys.exit(1)
+
+        # Sort by price
+        all_series_data.sort(key=lambda x: x[1])
+
+        # Output results
+        if return_region:
+            best = all_series_data[0]
+            best_region = best[3]
+            best_vm_size = best[0]
+            best_price = best[1]
+            best_unit = best[2]
+            if args.return_region_json:
+                result = {
+                    "region": best_region,
+                    "vmSize": best_vm_size,
+                    "price": best_price,
+                    "unit": best_unit,
+                }
+                print(json.dumps(result))
+            else:
+                print(f"{best_region} {best_vm_size} {best_price} {best_unit}")
+        else:
+            print(f"\nFound {len(all_series_data)} VM options")
+            if cpu_filter:
+                print(f"Filtered to {cpu_filter} vCPU VMs")
+            top_label = f"Top {args.top}" if args.top > 0 else "All"
+            print(f"{top_label} cheapest options:\n")
+
+            headers = [
+                "SKU",
+                "Retail Price",
+                "Unit of Measure",
+                "Region",
+                "Meter",
+                "Product Name",
+            ]
+            display_data = all_series_data
+            if args.top > 0:
+                display_data = all_series_data[: args.top]
+            print(tabulate(display_data, headers=headers, tablefmt="psql"))
         sys.exit(0)
 
     # Build list of VM sizes to query
