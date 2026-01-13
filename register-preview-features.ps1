@@ -17,6 +17,7 @@
 #   -Unregister         Unregister (disable) the specified feature(s)
 #   -ListOnly           List features without registering
 #   -UnregisteredOnly   Only show/process unregistered features
+#   -UnregisterAll      Unregister ALL registered preview features (reset to default)
 #   -SaveState          Save current feature states to JSON file
 #   -RestoreState       Restore feature states from JSON file
 #   -StateFile          Path to state file (default: preview-features-state-TIMESTAMP.json)
@@ -33,6 +34,8 @@
 #   pwsh register-preview-features.ps1 -WhatIf
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -CheckStatus
 #   pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
+#   pwsh register-preview-features.ps1 -UnregisterAll -ProviderNamespace "Microsoft.Network"
+#   pwsh register-preview-features.ps1 -UnregisterAll -Force
 #
 # Requires: Azure PowerShell module (Az), Contributor/Owner role
 
@@ -74,6 +77,12 @@
 
 .PARAMETER UnregisteredOnly
     Only show/process features that are not yet registered.
+
+.PARAMETER UnregisterAll
+    Unregister ALL registered preview features, resetting them to default state.
+    Use with -ProviderNamespace to limit to specific namespace(s).
+    Use with -Force to skip confirmation prompt.
+    WARNING: This can break features that depend on preview functionality.
 
 .PARAMETER SaveState
     Save current feature states to a JSON file for backup.
@@ -129,6 +138,14 @@
     .\register-preview-features.ps1 -ProviderNamespace "Microsoft.Network" -FeatureName "AllowManaFastPath" -Unregister
     Unregisters (disables) the AllowManaFastPath feature.
 
+.EXAMPLE
+    .\register-preview-features.ps1 -UnregisterAll -ProviderNamespace "Microsoft.Network"
+    Unregisters ALL registered Microsoft.Network preview features, resetting to default.
+
+.EXAMPLE
+    .\register-preview-features.ps1 -UnregisterAll -Force
+    Unregisters ALL registered preview features across all namespaces without confirmation.
+
 .NOTES
     Requires Azure PowerShell module (Az) and Contributor/Owner role.
     Some features require Microsoft approval and cannot be self-registered.
@@ -158,6 +175,9 @@ param(
 
     [Parameter(Mandatory = $false)]
     [switch]$UnregisteredOnly,
+
+    [Parameter(Mandatory = $false)]
+    [switch]$UnregisterAll,
 
     [Parameter(Mandatory = $false)]
     [switch]$SaveState,
@@ -356,7 +376,9 @@ function Get-FeatureStatus {
 # Main script execution
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-if ($Unregister) {
+if ($UnregisterAll) {
+    Write-Host "  Unregister All Preview Features      " -ForegroundColor Cyan
+} elseif ($Unregister) {
     Write-Host "  Azure Preview Features Unregistration" -ForegroundColor Cyan
 } elseif ($CheckStatus) {
     Write-Host "  Azure Preview Features Status Check  " -ForegroundColor Cyan
@@ -635,6 +657,174 @@ if ($RestoreState) {
         Write-Log "Done." "SUCCESS"
     }
 
+    exit 0
+}
+
+# Handle UnregisterAll operation
+if ($UnregisterAll) {
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  Unregister All Preview Features      " -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+
+    # Get all features
+    $allFeatures = Get-AllPreviewFeatures -Namespace $ProviderNamespace
+
+    # Filter to only registered features
+    $registeredFeatures = $allFeatures | Where-Object {
+        $_.RegistrationState -eq "Registered" -or
+        $_.RegistrationState -eq "Registering"
+    }
+
+    if ($registeredFeatures.Count -eq 0) {
+        Write-Log "No registered preview features found." "INFO"
+        exit 0
+    }
+
+    # Filter out internal features that can't be unregistered
+    $toUnregister = @()
+    $skippedInternal = @()
+    foreach ($f in $registeredFeatures) {
+        if (Test-InternalFeature -FeatureName $f.FeatureName) {
+            $skippedInternal += "$($f.ProviderName)/$($f.FeatureName)"
+        } else {
+            $toUnregister += $f
+        }
+    }
+
+    Write-Host "Found $($toUnregister.Count) registered features to unregister" -ForegroundColor Yellow
+    if ($skippedInternal.Count -gt 0) {
+        Write-Host "Skipping $($skippedInternal.Count) internal/restricted features" -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    if ($toUnregister.Count -eq 0) {
+        Write-Log "No unregisterable features found." "INFO"
+        exit 0
+    }
+
+    # Show features by namespace
+    Write-Host "Registered features by namespace:" -ForegroundColor Cyan
+    $toUnregister | Group-Object ProviderName | Sort-Object Count -Descending | ForEach-Object {
+        Write-Host "  $($_.Name): $($_.Count)" -ForegroundColor White
+    }
+    Write-Host ""
+
+    # Show first 30 features
+    Write-Host "Features to unregister (first 30):" -ForegroundColor Yellow
+    $toUnregister | Select-Object -First 30 | ForEach-Object {
+        Write-Host "  $($_.ProviderName)/$($_.FeatureName)" -ForegroundColor Yellow
+    }
+    if ($toUnregister.Count -gt 30) {
+        Write-Host "  ... and $($toUnregister.Count - 30) more" -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    # Confirm
+    if (-not $Force -and -not $WhatIfPreference) {
+        Write-Host "WARNING: This will unregister ALL $($toUnregister.Count) preview features." -ForegroundColor Red
+        Write-Host "This may break functionality that depends on preview features." -ForegroundColor Red
+        Write-Host "Consider using -SaveState first to backup current state." -ForegroundColor Yellow
+        Write-Host ""
+        $confirm = Read-Host "Type 'YES' to confirm (case-sensitive)"
+        if ($confirm -ne "YES") {
+            Write-Log "Operation cancelled by user." "WARN"
+            exit 0
+        }
+    }
+
+    # Track affected namespaces
+    $affectedNamespaces = @{}
+    $unregisteredCount = 0
+    $skippedCount = 0
+    $failedCount = 0
+    $results = @()
+
+    $total = $toUnregister.Count
+    $current = 0
+
+    foreach ($feature in $toUnregister) {
+        $current++
+        $progress = [math]::Round(($current / $total) * 100)
+        Write-Progress -Activity "Unregistering Preview Features" -Status "$current of $total" -PercentComplete $progress
+
+        $featureId = "$($feature.ProviderName)/$($feature.FeatureName)"
+
+        if ($WhatIfPreference) {
+            Write-Log "WhatIf: Would unregister $featureId" "INFO"
+            $results += [PSCustomObject]@{
+                ProviderNamespace = $feature.ProviderName
+                FeatureName       = $feature.FeatureName
+                PreviousState     = $feature.RegistrationState
+                NewState          = "WhatIf"
+                Success           = $true
+                Error             = $null
+            }
+            continue
+        }
+
+        Write-Host "Unregistering: $featureId..." -ForegroundColor Cyan -NoNewline
+        $result = Unregister-PreviewFeature -FeatureName $feature.FeatureName -ProviderNamespace $feature.ProviderName
+
+        $results += [PSCustomObject]@{
+            ProviderNamespace = $feature.ProviderName
+            FeatureName       = $feature.FeatureName
+            PreviousState     = $feature.RegistrationState
+            NewState          = $result.State
+            Success           = $result.Success
+            Error             = $result.Error
+        }
+
+        if ($result.Success) {
+            Write-Host " OK" -ForegroundColor Green
+            $affectedNamespaces[$feature.ProviderName] = $true
+            $unregisteredCount++
+        }
+        elseif ($result.State -eq "Unsupported") {
+            Write-Host " SKIPPED (restricted)" -ForegroundColor Yellow
+            $skippedCount++
+        }
+        else {
+            Write-Host " FAILED" -ForegroundColor Red
+            $failedCount++
+        }
+
+        # Small delay to avoid throttling
+        Start-Sleep -Milliseconds 200
+    }
+
+    Write-Progress -Activity "Unregistering Preview Features" -Completed
+
+    # Summary
+    Write-Host ""
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "         Unregister All Summary        " -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "  Total Processed:    $total" -ForegroundColor White
+    Write-Host "  Unregistered:       $unregisteredCount" -ForegroundColor Green
+    Write-Host "  Skipped:            $skippedCount" -ForegroundColor Yellow
+    Write-Host "  Failed:             $failedCount" -ForegroundColor Red
+    Write-Host ""
+
+    # Export if requested
+    if ($ExportPath) {
+        $results | Export-Csv -Path $ExportPath -NoTypeInformation
+        Write-Log "Results exported to: $ExportPath" "SUCCESS"
+    }
+
+    # Register providers to propagate changes
+    if ($affectedNamespaces.Count -gt 0 -and -not $WhatIfPreference) {
+        Write-Log "Registering providers to propagate changes..." "INFO"
+        foreach ($ns in $affectedNamespaces.Keys) {
+            Write-Host "  Register-AzResourceProvider -ProviderNamespace $ns" -ForegroundColor Gray
+            Register-AzResourceProvider -ProviderNamespace $ns | Out-Null
+        }
+        Write-Log "Done." "SUCCESS"
+    }
+
+    Write-Log "Script completed. All preview features have been reset to default state." "INFO"
     exit 0
 }
 
