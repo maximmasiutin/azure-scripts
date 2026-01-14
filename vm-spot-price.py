@@ -826,6 +826,11 @@ def main() -> None:
         help="Query all VM series without filters. Only region and spot/non-spot "
         "filters apply. Use --cpu for client-side core filtering.",
     )
+    parser.add_argument(
+        "--windows",
+        action="store_true",
+        help="Search for Windows VMs instead of Linux (default: Linux)",
+    )
 
     args: Namespace = parser.parse_args()
 
@@ -834,6 +839,12 @@ def main() -> None:
         warnings.filterwarnings("ignore", category=DeprecationWarning)
         warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
         warnings.filterwarnings("ignore", category=FutureWarning)
+
+    # Override OS filtering based on --windows argument
+    global DEFAULT_SEARCH_VMWINDOWS, DEFAULT_SEARCH_VMLINUX
+    if args.windows:
+        DEFAULT_SEARCH_VMWINDOWS = True
+        DEFAULT_SEARCH_VMLINUX = False
 
     if args.validate_config:
         print("Configuration validation:")
