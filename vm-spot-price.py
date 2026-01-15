@@ -216,9 +216,13 @@ def build_pricing_table(
             if not low_priority and "Low Priority" in meter_name:
                 continue
 
-            # Client-side Windows filtering (for ARM VMs that skip productName API filter)
+            # Client-side Windows/Linux filtering (for ARM VMs that skip productName API filter)
             if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
                 if "Windows" in product_name:
+                    continue
+            # Filter Linux if only Windows requested
+            if DEFAULT_SEARCH_VMWINDOWS and not DEFAULT_SEARCH_VMLINUX:
+                if "Windows" not in product_name:
                     continue
 
             table_data.append(
@@ -600,6 +604,10 @@ def _process_per_core_item(
         # Filter Windows if only Linux requested
         if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
             if "Windows" in product_name:
+                return
+        # Filter Linux if only Windows requested
+        if DEFAULT_SEARCH_VMWINDOWS and not DEFAULT_SEARCH_VMLINUX:
+            if "Windows" not in product_name:
                 return
 
         if non_spot and "Spot" in meter_name:
@@ -1311,6 +1319,10 @@ def main() -> None:
                     # Filter Windows if only Linux requested
                     if DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
                         if "Windows" in product_name:
+                            continue
+                    # Filter Linux if only Windows requested
+                    if DEFAULT_SEARCH_VMWINDOWS and not DEFAULT_SEARCH_VMLINUX:
+                        if "Windows" not in product_name:
                             continue
 
                     if non_spot and "Spot" in meter_name:
