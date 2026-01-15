@@ -2,7 +2,8 @@
 # pylint: disable=invalid-name,too-many-lines,logging-fstring-interpolation
 # pylint: disable=too-many-locals,too-many-branches,too-many-statements
 # pylint: disable=too-many-arguments,too-many-positional-arguments,broad-exception-caught
-# pylint: disable=too-many-return-statements,too-many-nested-blocks
+# pylint: disable=too-many-return-statements,too-many-nested-blocks,line-too-long
+# pylint: disable=global-statement
 """
 vm-spot-price.py - Azure VM Spot Price Finder
 
@@ -288,6 +289,98 @@ def print_progress(current: int, total: int, prefix: str = "Progress") -> None:
     filled_length = int(bar_length * current // total)
     progress_bar = "#" * filled_length + "-" * (bar_length - filled_length)
     print(f"\r{prefix}: |{progress_bar}| {percent:.1f}%", end="", flush=True)
+
+
+class PageEstimator:
+    """Estimate total pages and track ETA for API fetching."""
+
+    # Empirical page count estimates based on query type and scope
+    # Azure API returns 100 items per page
+    ESTIMATES = {
+        "single_sku": 1,  # Single SKU pattern query
+        "multi_sku_per_vm": 1,  # Per VM size in multi-VM query
+        "per_core_single_region": 4,  # Single query with --region filter
+        "per_core_all_regions": 130,  # Single query, all regions
+        "all_series_single_region": 5,  # --all-vm-series with --region
+        "all_series_all_regions": 140,  # --all-vm-series without --region
+        "per_series_query": 2,  # Per series in multi-query mode
+    }
+
+    # Typical fetch time per page (seconds) - used for initial ETA
+    AVG_PAGE_TIME = 0.6
+
+    def __init__(self) -> None:
+        self.page_times: List[float] = []
+        self.start_time: float = 0.0
+        self.estimated_total: int = 0
+
+    def estimate_pages(
+        self,
+        query_type: str,
+        has_region: bool = False,
+        series_count: int = 0,
+        vm_count: int = 0,
+    ) -> int:
+        """Estimate total pages based on query type and parameters."""
+        if query_type == "single_sku":
+            return self.ESTIMATES["single_sku"] * max(1, vm_count)
+        if query_type == "multi_sku":
+            return self.ESTIMATES["multi_sku_per_vm"] * max(1, vm_count)
+        if query_type == "per_core_single":
+            if has_region:
+                return self.ESTIMATES["per_core_single_region"]
+            return self.ESTIMATES["per_core_all_regions"]
+        if query_type == "per_core_multi":
+            return self.ESTIMATES["per_series_query"] * max(1, series_count)
+        if query_type == "all_series":
+            if has_region:
+                return self.ESTIMATES["all_series_single_region"]
+            return self.ESTIMATES["all_series_all_regions"]
+        return 10  # Default fallback
+
+    def start(self, estimated_total: int) -> None:
+        """Start tracking with estimated total pages."""
+        self.estimated_total = estimated_total
+        self.start_time = time.time()
+        self.page_times = []
+
+    def record_page(self, page_time: float) -> None:
+        """Record time taken for a page fetch."""
+        self.page_times.append(page_time)
+
+    def get_avg_page_time(self) -> float:
+        """Get average page fetch time based on recorded times."""
+        if not self.page_times:
+            return self.AVG_PAGE_TIME
+        return sum(self.page_times) / len(self.page_times)
+
+    def get_eta_str(self, current_page: int, total_pages: int) -> str:
+        """Get ETA string for remaining pages."""
+        remaining = max(0, total_pages - current_page)
+        if remaining == 0:
+            return "done"
+        avg_time = self.get_avg_page_time()
+        eta_seconds = remaining * avg_time
+        if eta_seconds < 60:
+            return f"{eta_seconds:.0f}s"
+        if eta_seconds < 3600:
+            minutes = int(eta_seconds // 60)
+            seconds = int(eta_seconds % 60)
+            return f"{minutes}m{seconds:02d}s"
+        hours = int(eta_seconds // 3600)
+        minutes = int((eta_seconds % 3600) // 60)
+        return f"{hours}h{minutes:02d}m"
+
+    def format_progress(
+        self, current_page: int, total_pages: int, prefix: str = "Fetching"
+    ) -> str:
+        """Format progress string with page count and ETA."""
+        eta = self.get_eta_str(current_page, total_pages)
+        return f"{prefix} page {current_page}/{total_pages} (ETA: {eta})"
+
+
+# Global page estimator instance
+PAGE_ESTIMATOR = PageEstimator()
 
 
 def extract_series_from_vm_size(vm_size: str) -> str:
@@ -837,7 +930,9 @@ def main() -> None:
     parser.add_argument(
         "--windows",
         action="store_true",
-        help="Search for Windows VMs instead of Linux (default: Linux)",
+        help="Search for Windows VMs instead of Linux (default: Linux). "
+        "Windows VMs typically cost 8-15%% more due to OS license fees. "
+        "Uses 'productName contains Windows' filter for accurate results.",
     )
 
     args: Namespace = parser.parse_args()
@@ -1036,11 +1131,19 @@ def main() -> None:
         try:
             if use_single_query:
                 # Single API call for all VMs, client-side filtering
+                has_region = bool(args.region)
+                estimated_pages = PAGE_ESTIMATOR.estimate_pages(
+                    "per_core_single", has_region=has_region
+                )
+                PAGE_ESTIMATOR.start(estimated_pages)
+
                 if not return_region:
                     print(
                         f"Searching for cheapest spot price per core ({args.min_cores}-{args.max_cores} vCPUs)..."
                     )
-                    print("Fetching all VM pricing data (single query)...")
+                    print(
+                        f"Fetching all VM pricing data (~{estimated_pages} pages expected)..."
+                    )
 
                 query = (
                     "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' "
@@ -1061,22 +1164,27 @@ def main() -> None:
 
                 logging.debug(f"Query: {query}")
 
+                page_start = time.time()
                 json_data = fetch_pricing_data(
                     api_url, {"$filter": query}, session, verbose=args.verbose
                 )
+                PAGE_ESTIMATOR.record_page(time.time() - page_start)
                 items = json_data.get("Items", [])
                 next_page = json_data.get("NextPageLink", "")
                 page_count = 1
 
                 while next_page and page_count < max_pages:
                     if not return_region:
-                        print(
-                            f"\rFetching page {page_count + 1}...", end="", flush=True
+                        progress_msg = PAGE_ESTIMATOR.format_progress(
+                            page_count + 1, estimated_pages
                         )
+                        print(f"\r{progress_msg}        ", end="", flush=True)
                     try:
+                        page_start = time.time()
                         json_data = fetch_pricing_data(
                             next_page, {}, session, verbose=args.verbose
                         )
+                        PAGE_ESTIMATOR.record_page(time.time() - page_start)
                         items.extend(json_data.get("Items", []))
                         next_page = json_data.get("NextPageLink", "")
                         page_count += 1
@@ -1084,7 +1192,7 @@ def main() -> None:
                         break
 
                 if not return_region:
-                    print(f"\rFetched {len(items)} items from {page_count} pages")
+                    print(f"\rFetched {len(items)} items from {page_count} pages        ")
 
                 # Process all items with client-side filtering
                 for item in items:
@@ -1100,16 +1208,24 @@ def main() -> None:
                     )
             else:
                 # Multi-query mode: one API call per series
+                estimated_pages = PAGE_ESTIMATOR.estimate_pages(
+                    "per_core_multi", series_count=len(series_list)
+                )
+                PAGE_ESTIMATOR.start(estimated_pages)
+
                 if not return_region:
                     print(
                         f"Searching for cheapest spot price per core ({args.min_cores}-{args.max_cores} vCPUs)..."
                     )
-                    print(f"Querying {len(series_list)} VM series...")
+                    print(
+                        f"Querying {len(series_list)} VM series (~{estimated_pages} pages expected)..."
+                    )
 
                 for idx, series_name in enumerate(series_list):
                     if not return_region:
+                        eta = PAGE_ESTIMATOR.get_eta_str(idx, len(series_list))
                         print(
-                            f"\r[{idx + 1}/{len(series_list)}] {series_name}...",
+                            f"\r[{idx + 1}/{len(series_list)}] {series_name} (ETA: {eta})     ",
                             end="",
                             flush=True,
                         )
@@ -1137,9 +1253,11 @@ def main() -> None:
                     logging.debug(f"Query: {query}")
 
                     try:
+                        page_start = time.time()
                         json_data = fetch_pricing_data(
                             api_url, {"$filter": query}, session, verbose=args.verbose
                         )
+                        PAGE_ESTIMATOR.record_page(time.time() - page_start)
                     except Exception as e:
                         logging.debug(f"No data for {series_name}: {e}")
                         continue
@@ -1150,9 +1268,11 @@ def main() -> None:
 
                     while next_page and page_count < 50:
                         try:
+                            page_start = time.time()
                             json_data = fetch_pricing_data(
                                 next_page, {}, session, verbose=args.verbose
                             )
+                            PAGE_ESTIMATOR.record_page(time.time() - page_start)
                             items.extend(json_data.get("Items", []))
                             next_page = json_data.get("NextPageLink", "")
                             page_count += 1
@@ -1251,9 +1371,18 @@ def main() -> None:
 
         all_series_data: List[List[Any]] = []
 
+        # Estimate pages for all-vm-series mode
+        has_region = bool(args.region)
+        estimated_pages = PAGE_ESTIMATOR.estimate_pages(
+            "all_series", has_region=has_region
+        )
+        PAGE_ESTIMATOR.start(estimated_pages)
+
         try:
             if not return_region:
-                print("Querying all VM series (no series filter)...")
+                print(
+                    f"Querying all VM series (~{estimated_pages} pages expected)..."
+                )
 
             # Build minimal query - no productName, no armSkuName
             query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
@@ -1278,20 +1407,27 @@ def main() -> None:
                 print(f"Filter: {query}")
                 sys.exit(0)
 
+            page_start = time.time()
             json_data = fetch_pricing_data(
                 api_url, {"$filter": query}, session, verbose=args.verbose
             )
+            PAGE_ESTIMATOR.record_page(time.time() - page_start)
             items = json_data.get("Items", [])
             next_page = json_data.get("NextPageLink", "")
             page_count = 1
 
             while next_page and page_count < max_pages:
                 if not return_region:
-                    print(f"\rFetching page {page_count + 1}...", end="", flush=True)
+                    progress_msg = PAGE_ESTIMATOR.format_progress(
+                        page_count + 1, estimated_pages
+                    )
+                    print(f"\r{progress_msg}        ", end="", flush=True)
                 try:
+                    page_start = time.time()
                     json_data = fetch_pricing_data(
                         next_page, {}, session, verbose=args.verbose
                     )
+                    PAGE_ESTIMATOR.record_page(time.time() - page_start)
                     items.extend(json_data.get("Items", []))
                     next_page = json_data.get("NextPageLink", "")
                     page_count += 1
@@ -1299,7 +1435,7 @@ def main() -> None:
                     break
 
             if not return_region:
-                print(f"\rFetched {len(items)} items from {page_count} pages")
+                print(f"\rFetched {len(items)} items from {page_count} pages        ")
 
             # Client-side filtering
             cpu_filter = args.cpu if args.cpu != int(DEFAULT_SEARCH_VMSIZE) else None
@@ -1498,16 +1634,24 @@ def main() -> None:
     session = create_resilient_session()
     max_pages = 50  # Safety limit per VM size
 
+    # Estimate total pages for SKU queries
+    estimated_pages = PAGE_ESTIMATOR.estimate_pages(
+        "multi_sku", vm_count=len(vm_sizes_list)
+    )
+    PAGE_ESTIMATOR.start(estimated_pages)
+
     try:
         if not return_region:
             print(
-                f"Fetching Azure VM pricing data for {len(vm_sizes_list)} VM size(s)..."
+                f"Fetching Azure VM pricing data for {len(vm_sizes_list)} VM size(s) "
+                f"(~{estimated_pages} pages expected)..."
             )
 
         for idx, (sku, series) in enumerate(vm_sizes_list):
             if len(vm_sizes_list) > 1 and not return_region:
+                eta = PAGE_ESTIMATOR.get_eta_str(idx, len(vm_sizes_list))
                 print(
-                    f"\n[{idx + 1}/{len(vm_sizes_list)}] Querying {sku} (series: {series})..."
+                    f"\n[{idx + 1}/{len(vm_sizes_list)}] Querying {sku} (ETA: {eta})..."
                 )
 
             # Build query for this VM size
@@ -1552,9 +1696,11 @@ def main() -> None:
             logging.debug(f"Query: {query}")
 
             # Initial request
+            page_start = time.time()
             json_data = fetch_pricing_data(
                 api_url, {"$filter": query}, session, verbose=args.verbose
             )
+            PAGE_ESTIMATOR.record_page(time.time() - page_start)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
 
             next_page = json_data.get("NextPageLink", "")
@@ -1563,12 +1709,15 @@ def main() -> None:
             # Follow pagination
             while next_page and page_count < max_pages:
                 if not return_region:
-                    print_progress(
-                        page_count, min(page_count + 10, max_pages), "Fetching pages"
+                    progress_msg = PAGE_ESTIMATOR.format_progress(
+                        page_count + 1, max_pages
                     )
+                    print(f"\r{progress_msg}        ", end="", flush=True)
+                page_start = time.time()
                 json_data = fetch_pricing_data(
                     next_page, {}, session, verbose=args.verbose
                 )
+                PAGE_ESTIMATOR.record_page(time.time() - page_start)
                 next_page = json_data.get("NextPageLink", "")
                 build_pricing_table(json_data, table_data, non_spot, low_priority)
                 page_count += 1
@@ -1578,7 +1727,7 @@ def main() -> None:
                     f"\nWarning: Reached maximum page limit ({max_pages}) for {sku}. Results may be incomplete."
                 )
             elif page_count > 1 and not return_region:
-                print()  # New line after progress bar
+                print()  # New line after progress
 
     except Exception as e:
         logging.error(f"Failed to fetch pricing data: {e}")
