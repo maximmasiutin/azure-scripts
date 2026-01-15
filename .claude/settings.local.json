@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:/q/azure-scripts\" diff create-spot-vms.ps1)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push)",
+      "Bash(pwsh:*)",
+      "Bash(python:*)",
+      "Bash(more:*)",
+      "Bash(powershell -Command \"Get-Content ''C:/q/azure-scripts/vm-spot-price.py'' -First 30\")",
+      "Bash(powershell -Command \"\\(Get-Content ''C:/q/azure-scripts/vm-spot-price.py''\\)[23..26]\")",
+      "Bash(powershell -Command:*)",
+      "Bash(del \"C:/q/azure-scripts/fix_imports.py\")",
+      "WebFetch(domain:tests.stockfishchess.org)",
+      "Bash(mypy:*)",
+      "Bash(ls:*)",
+      "Bash(bandit:*)",
+      "Bash(az feature list:*)",
+      "Bash(del C:qazure-scriptscompute-features.json)",
+      "Bash(findstr:*)",
+      "Bash(black:*)",
+      "Bash(pylint:*)",
+      "Bash(wmic process where \"name like ''%python%''\" get commandline)",
+      "Bash(curl:*)",
+      "Bash(ruff check:*)",
+      "Bash(del C:/q/azure-scripts/api_test.json)",
+      "Bash(git -C C:/q/azure-scripts status)",
+      "Bash(git -C C:/q/azure-scripts diff vm-spot-price.py)",
+      "Bash(git -C C:/q/azure-scripts add vm-spot-price.py)",
+      "Bash(git -C C:/q/azure-scripts log --oneline -5)",
+      "Bash(git -C C:/q/azure-scripts commit -m \"Fix --windows parameter to properly filter out Linux VMs; add client-side Windows-only filtering in build_pricing_table, _process_per_core_item, and all_vm_series mode\")",
+      "Bash(git -C C:/q/azure-scripts push)",
+      "Bash(\"C:/Program Files/SonarScanner/bin/sonar-scanner.bat\" -Dsonar.host.url=http://localhost:9000 -Dsonar.token=squ_5a87992dbcdd09c35bb678c8dc26f11c58cc5aa1 -Dsonar.projectBaseDir=C:/q/azure-scripts)",
+      "Bash(git -C C:/q/azure-scripts status --short sonar-project.properties)",
+      "Bash(del C:/q/azure-scripts/get-token.ps1 C:/q/azure-scripts/find-service.py C:/q/azure-scripts/problem-class.json C:/q/azure-scripts/support-ticket.json C:/q/azure-scripts/ticket-response.json)",
+      "Bash(del \"C:/q/azure-scripts/sonar-project.properties\")"
+    ]
+  }
+}

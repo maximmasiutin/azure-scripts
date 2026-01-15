@@ -2,11 +2,13 @@
 
 1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
-1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison and per-core pricing analysis. Examples of use:
-  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (1 page)
-  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region` (4 pages)
+1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, and Windows VMs. Examples of use:
+  `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (~1 page)
+  `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region` (~4 pages)
   `python vm-spot-price.py --cpu 64 --no-burstable --region eastus` (~4 pages)
-  `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region` (~130 pages)  
+  `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region` (~130 pages)
+  `python vm-spot-price.py --all-vm-series --cpu 64` (~140 pages)
+  `python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"` (~1 page, Windows)  
 1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
   `python blob-storage-price.py`  
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
@@ -28,17 +30,20 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - **Per-Core Pricing**: Find cheapest spot price per vCPU core across VM series with `--min-cores` and `--max-cores`
    - **ARM VM Support**: Supports ARM-based VMs (e.g., D4ps_v5, D4pls_v5) with automatic detection and proper Azure API querying
+   - **Windows VM Support**: Use `--windows` to search for Windows VMs instead of Linux (default). Windows VMs typically cost 8-15% more due to OS license fees.
    - Exclusion Filters: Exclude specific regions, VM sizes, SKU patterns (# = digits), or ARM VMs via `--exclude-arm`
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
    - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format; `--return-region-json` outputs JSON for direct parsing
    - Use Cases: Cost optimization before VM deployment, automated region selection
+   - **Progress Display**: Shows "Fetching page N/M (ETA: Xs)" with real-time ETA calculation based on actual fetch times
    - **API Efficiency**: Different query modes use different numbers of API pages:
-     - SKU pattern mode: 1 page per SKU (fastest)
-     - Multi-VM mode (`--vm-sizes`): 1 page per VM size
-     - Multi-query mode (`--series`, `--latest`): 1 page per series
+     - SKU pattern mode: ~1 page per SKU (fastest)
+     - Multi-VM mode (`--vm-sizes`): ~1 page per VM size
+     - Multi-query mode (`--series`, `--latest`): ~2 pages per series
      - Single-query mode (`--no-burstable`, `--general-compute`): ~4 pages/region, ~130 pages all regions
-     - Use `--region` to reduce pages from ~130 to ~4
+     - All-VM mode (`--all-vm-series`): ~5 pages/region, ~140 pages all regions
+     - Use `--region` to reduce pages from ~130-140 to ~4-5
    - Examples:
      ```bash
      # Single SKU pattern (1 page)
@@ -67,6 +72,17 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      # ARM-based VMs (Ampere Altra processors) - automatic detection
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ARM VMs work natively
      python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm     # Exclude ARM VMs
+
+     # Windows VMs (default is Linux) - typically 8-15% more expensive
+     python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"                   # ~1 page
+     python vm-spot-price.py --windows --vm-sizes "D4as_v5,F4s_v2" --return-region      # ~2 pages
+     python vm-spot-price.py --windows --cpu 64 --no-burstable --region eastus          # ~4 pages
+     python vm-spot-price.py --windows --min-cores 2 --max-cores 64 --general-compute   # ~130 pages
+
+     # All VM series mode (no series filter - discovers all available VMs)
+     python vm-spot-price.py --all-vm-series --region eastus                            # ~5 pages
+     python vm-spot-price.py --all-vm-series --cpu 64                                   # ~140 pages
+     python vm-spot-price.py --all-vm-series --cpu 64 --windows --region westus2        # ~5 pages
 
      # Exclude specific regions or VM sizes
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
