@@ -20,6 +20,7 @@ GEMINI.md and CLAUDE.md must be untracked. Do not add these files in any locatio
 **PowerShell (infrastructure):**
 - `change-ip-to-static.ps1` - Convert dynamic public IPs to static
 - `create-spot-vms.ps1` - Automated spot VM deployment
+- `create-192core-vm.ps1` - Create 192-core spot VM, auto-finds cheapest region/VM (x64 only, excludes ARM)
 - `set-storage-account-content-headers.ps1` - Configure static website headers
 
 **Bash (Linux VMs):**
@@ -222,6 +223,33 @@ Location: `S:\Composer\Bin`
 - **Security Type Conflict Handling**: Detects `securityProfile.securityType` conflict errors, cleans up disk, and retries automatically
 - **Infrastructure-Only Mode**: Added `-CreateInfrastructureOnly` switch (requires `-UseNatGateway`). Creates only shared infrastructure (RG, VNet, Subnet, NAT Gateway) without any VMs. Returns JSON with resource details for orchestration. Useful for multi-worker setups where infrastructure should be created once before spawning parallel workers.
 - **Race Condition Handling**: NAT Gateway creation catch block now checks if gateway was created by concurrent worker (handles `CanceledAndSupersededDueToAnotherOperation` error gracefully)
+- **Environment Variable Support for Credentials**: Added support for environment variables as fallback for credentials:
+  - `AZURE_VM_USERNAME` or `AZURE_ADMIN_USERNAME` for admin username
+  - `AZURE_VM_PASSWORD` or `AZURE_ADMIN_PASSWORD` for admin password
+  - `AZURE_SSH_PUBLIC_KEY` for SSH public key
+- Command line parameters take precedence over environment variables
+
+**create-192core-vm.ps1:**
+- PowerShell script for creating 192-core Spot VMs with SSH enabled
+- Automatically finds cheapest 192-core VM and region using vm-spot-price.py
+- Pre-checks spot quota in 40 major regions BEFORE running pricing API query (saves time by excluding regions without quota)
+- Excludes ARM VMs (x64 only)
+- Excludes restricted regions: paired/DR regions (australiacentral2, francesouth, germanynorth, etc.) and Azure Extended Zones city names (portland, losangeles, seattle, etc.)
+- Progress indicator with spinner, elapsed time, and ETA during pricing API query
+- Handles VM size prefix correctly (prevents double "Standard_" prefix)
+- Requires three environment variables (exits with error if missing):
+  - `AZURE_SSH_PUBLIC_KEY` - SSH public key
+  - `AZURE_VM_USERNAME` - Admin username
+  - `AZURE_VM_PASSWORD` - Admin password
+- Parameters: `-VMName`, `-Location`, `-VMSize`, `-MinCores`, `-MaxCores`, `-ResourceGroupName`, `-WhatIf`
+- Usage: `pwsh create-192core-vm.ps1 [-VMName myvm] [-Location eastus] [-VMSize Standard_E192as_v5]`
+
+**Azure Extended Zones Note:**
+The Azure Retail Prices API returns armRegionName values that include both standard Azure region IDs (eastus, westus2) and Azure Extended Zone metro locations (losangeles, portland, phoenix). Extended Zones are small-footprint Azure extensions in metropolitan areas for low-latency workloads. Currently only Los Angeles and Perth are GA. These city names are NOT valid for standard ARM operations (resource groups, VNets, VMs), so create-192core-vm.ps1 filters them out to ensure only valid region IDs are used.
+
+**create-192core-vm.cmd:**
+- Simple batch wrapper for create-192core-vm.ps1
+- Usage: `create-192core-vm.cmd [vmname] [location] [vmsize]`
 
 **preview-vm-exclusions.txt:**
 - New exclusion file for VM sizes requiring feature flag registration
