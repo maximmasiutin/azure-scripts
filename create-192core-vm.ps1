@@ -41,8 +41,9 @@ if (-not $VMSize -or -not $Location) {
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $priceScript = Join-Path $scriptDir "vm-spot-price.py"
 
-    # Restricted regions that don't support full VM operations (no VNet, no quota API)
+    # Restricted/invalid regions (don't support full VM operations, or non-standard API names)
     $restrictedRegions = @(
+        # Paired/DR regions with limited services
         "australiacentral2",
         "francesouth",
         "germanynorth",
@@ -50,7 +51,34 @@ if (-not $VMSize -or -not $Location) {
         "southafricawest",
         "switzerlandwest",
         "uaecentral",
-        "westindia"
+        "westindia",
+        # Non-standard region names returned by pricing API (not valid Azure region IDs)
+        "portland",
+        "phoenix",
+        "chicago",
+        "dallas",
+        "losangeles",
+        "sanfrancisco",
+        "seattle",
+        "miami",
+        "atlanta",
+        "boston",
+        "newyork",
+        "washington",
+        "toronto",
+        "london",
+        "paris",
+        "amsterdam",
+        "dublin",
+        "frankfurt",
+        "zurich",
+        "singapore",
+        "hongkong",
+        "tokyo",
+        "osaka",
+        "seoul",
+        "sydney",
+        "melbourne"
     )
 
     # Major regions to check for quota (covers most Azure capacity)
