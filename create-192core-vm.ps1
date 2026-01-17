@@ -38,8 +38,6 @@ if (-not $ResourceGroupName) {
 
 # Find cheapest VM if not specified
 if (-not $VMSize -or -not $Location) {
-    Write-Host "Finding cheapest $MinCores-core spot VM..." -ForegroundColor Cyan
-
     $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     $priceScript = Join-Path $scriptDir "vm-spot-price.py"
 
@@ -54,9 +52,75 @@ if (-not $VMSize -or -not $Location) {
         "uaecentral",
         "westindia"
     )
-    $excludeRegionsArg = $restrictedRegions -join ","
 
-    # Query for cheapest VM with specified core count, exclude ARM and restricted regions
+    # Major regions to check for quota (covers most Azure capacity)
+    $regionsToCheck = @(
+        "eastus", "eastus2", "westus", "westus2", "westus3",
+        "centralus", "northcentralus", "southcentralus", "westcentralus",
+        "canadacentral", "canadaeast",
+        "northeurope", "westeurope", "uksouth", "ukwest",
+        "francecentral", "germanywestcentral", "swedencentral", "norwayeast",
+        "switzerlandnorth", "polandcentral", "italynorth", "spaincentral",
+        "australiaeast", "australiasoutheast", "australiacentral",
+        "southeastasia", "eastasia", "japaneast", "japanwest",
+        "koreacentral", "koreasouth", "centralindia", "southindia",
+        "brazilsouth", "southafricanorth", "uaenorth",
+        "qatarcentral", "israelcentral", "mexicocentral"
+    )
+
+    # Check quota in all regions FIRST (fast - ~1-2 sec per region)
+    Write-Host "Checking spot quota in $($regionsToCheck.Count) regions..." -ForegroundColor Cyan
+    $noQuotaRegions = @()
+    $regionsWithQuota = @()
+    $checkedCount = 0
+
+    foreach ($region in $regionsToCheck) {
+        $checkedCount++
+        Write-Host "`r  Checking $region ($checkedCount/$($regionsToCheck.Count))..." -NoNewline -ForegroundColor Gray
+
+        try {
+            $usage = Get-AzVMUsage -Location $region -ErrorAction Stop
+            $spotQuota = $usage | Where-Object { $_.Name.Value -eq "lowPriorityCores" }
+
+            if ($spotQuota) {
+                $available = $spotQuota.Limit - $spotQuota.CurrentValue
+                if ($available -lt $MinCores) {
+                    $noQuotaRegions += $region
+                } else {
+                    $regionsWithQuota += @{ Region = $region; Available = $available }
+                }
+            }
+        } catch {
+            # Region doesn't support quota API - add to restricted
+            $noQuotaRegions += $region
+        }
+    }
+    Write-Host "`r$(' ' * 60)" -NoNewline  # Clear line
+    Write-Host "`rQuota check complete: $($regionsWithQuota.Count) regions with $MinCores+ cores available" -ForegroundColor Cyan
+
+    if ($regionsWithQuota.Count -eq 0) {
+        Write-Host "ERROR: No regions found with $MinCores available spot cores." -ForegroundColor Red
+        Write-Host "Request quota increase at: https://portal.azure.com/#blade/Microsoft_Azure_Capacity/QuotaMenuBlade" -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "Regions checked (all have insufficient quota):" -ForegroundColor Yellow
+        $noQuotaRegions | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
+        exit 1
+    }
+
+    # Show regions with quota
+    Write-Host "Regions with available quota:" -ForegroundColor Green
+    $regionsWithQuota | Sort-Object -Property Available -Descending | Select-Object -First 10 | ForEach-Object {
+        Write-Host "  $($_.Region): $($_.Available) cores available" -ForegroundColor Gray
+    }
+    Write-Host ""
+
+    # Combine all regions to exclude
+    $allExcludedRegions = $restrictedRegions + $noQuotaRegions | Select-Object -Unique
+    $excludeRegionsArg = $allExcludedRegions -join ","
+
+    Write-Host "Finding cheapest $MinCores-core spot VM in regions with quota..." -ForegroundColor Cyan
+
+    # Query for cheapest VM with specified core count, exclude ARM and regions without quota
     $priceArgs = @(
         $priceScript,
         "--min-cores", $MinCores,
@@ -132,36 +196,29 @@ if (-not $VMSize -or -not $Location) {
     Write-Host "Found: $VMSize in $Location at `$$price/hour" -ForegroundColor Green
 }
 
-# Check quota
+# Final quota verification (quick check - quota was pre-filtered if auto-detecting region)
 Write-Host ""
-Write-Host "Checking spot quota in $Location..." -ForegroundColor Cyan
-
 try {
     $usage = Get-AzVMUsage -Location $Location -ErrorAction Stop
     $spotQuota = $usage | Where-Object { $_.Name.Value -eq "lowPriorityCores" }
 
     if ($spotQuota) {
         $available = $spotQuota.Limit - $spotQuota.CurrentValue
-
-        # Extract core count from VM size (e.g., E192as_v5 -> 192)
         $required = 0
         if ($VMSize -match '(\d+)') {
             $required = [int]$Matches[1]
         }
 
-        Write-Host "Spot quota: $($spotQuota.CurrentValue)/$($spotQuota.Limit) used, $available available, need $required" -ForegroundColor White
+        Write-Host "Spot quota in ${Location}: $($spotQuota.CurrentValue)/$($spotQuota.Limit) used, $available available" -ForegroundColor Gray
 
         if ($available -lt $required) {
-            Write-Host "ERROR: Insufficient spot quota in $Location. Need $required cores, only $available available." -ForegroundColor Red
+            Write-Host "ERROR: Insufficient spot quota. Need $required cores, only $available available." -ForegroundColor Red
             Write-Host "Request quota increase at: https://portal.azure.com/#blade/Microsoft_Azure_Capacity/QuotaMenuBlade" -ForegroundColor Yellow
             exit 1
         }
-        Write-Host "Quota check passed" -ForegroundColor Green
-    } else {
-        Write-Host "WARNING: Could not verify spot quota (lowPriorityCores not found)" -ForegroundColor Yellow
     }
 } catch {
-    Write-Host "WARNING: Could not check quota: $_" -ForegroundColor Yellow
+    # Ignore - quota was already checked in pre-filter if auto-detecting
 }
 
 # Summary
