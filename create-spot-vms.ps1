@@ -43,9 +43,36 @@
 #     Remove-AzNatGateway -ResourceGroupName WorkersRG -Name MyNet-natgw -Force
 #     Remove-AzPublicIpAddress -ResourceGroupName WorkersRG -Name MyNet-natgw-pip -Force
 #
+# Authentication:
+#   Supports SSH public key and/or password authentication.
+#   Credentials can be set via command line parameters or environment variables.
+#
+#   Command Line Parameters:
+#     -AdminUsername    VM admin username (default: azureuser)
+#     -AdminPassword    VM admin password (SecureString, auto-generated if not provided)
+#     -SshPublicKey     SSH public key for key-based authentication
+#
+#   Environment Variables (used if parameters not specified):
+#     AZURE_VM_USERNAME or AZURE_ADMIN_USERNAME   Admin username
+#     AZURE_VM_PASSWORD or AZURE_ADMIN_PASSWORD   Admin password (plaintext)
+#     AZURE_SSH_PUBLIC_KEY                        SSH public key
+#
+#   SSH Access:
+#     SSH is allowed by default (port 22 open in NSG).
+#     Use -BlockSSH to create NSG without SSH rule.
+#     Use -NoNSG to skip NSG creation entirely.
+#
 # Basic Examples:
 #   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName myvm
 #   pwsh create-spot-vms.ps1 -Location centralindia -VMSize Standard_D64pls_v6 -VMName arm-vm
+#
+# SSH Key Examples:
+#   # Via command line
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D96as_v5 -VMName bigvm -SshPublicKey "ssh-ed25519 AAAA... user@host"
+#
+#   # Via environment variable
+#   $env:AZURE_SSH_PUBLIC_KEY = "ssh-ed25519 AAAA... user@host"
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D96as_v5 -VMName bigvm
 #
 # Requires: PowerShell 7.5 or later (run with pwsh)
 
@@ -120,7 +147,10 @@ param(
 
     # Graceful deletion mode (simulates eviction)
     [switch]$GracefulDelete,  # If set, gracefully delete VM(s) instead of creating
-    [int]$GracePeriodSeconds = 30  # Seconds to wait for VM to save state before deletion
+    [int]$GracePeriodSeconds = 30,  # Seconds to wait for VM to save state before deletion
+
+    # Logging
+    [switch]$SuppressWarnings  # If set, suppress Azure breaking change warnings (also via AZURE_SUPPRESS_WARNINGS env var)
 )
 
 # PowerShell version check
@@ -133,8 +163,46 @@ if ($PSVersionTable.PSVersion.Major -lt 7 -or
     exit 1
 }
 
-# Suppress Azure breaking change warnings to clean up logs
-$env:SuppressAzurePowerShellBreakingChangeWarnings = "true"
+# Azure breaking change warnings suppression (conditional)
+# - Default: show warnings
+# - Suppress if: -SuppressWarnings switch OR AZURE_SUPPRESS_WARNINGS env var is set
+# - Never suppress in verbose/debug mode
+$isVerboseOrDebug = $VerbosePreference -ne 'SilentlyContinue' -or $DebugPreference -ne 'SilentlyContinue'
+$shouldSuppress = ($SuppressWarnings -or $env:AZURE_SUPPRESS_WARNINGS) -and (-not $isVerboseOrDebug)
+if ($shouldSuppress) {
+    $env:SuppressAzurePowerShellBreakingChangeWarnings = "true"
+} else {
+    $env:SuppressAzurePowerShellBreakingChangeWarnings = $null
+}
+
+# ==== ENVIRONMENT VARIABLE FALLBACKS ====
+# Support environment variables for credentials (command line takes precedence)
+
+# AdminUsername: AZURE_VM_USERNAME or AZURE_ADMIN_USERNAME
+if (-not $AdminUsername -or $AdminUsername -eq "azureuser") {
+    $envUsername = $env:AZURE_VM_USERNAME
+    if (-not $envUsername) { $envUsername = $env:AZURE_ADMIN_USERNAME }
+    if ($envUsername) {
+        $AdminUsername = $envUsername
+    }
+}
+
+# SshPublicKey: AZURE_SSH_PUBLIC_KEY
+if (-not $SshPublicKey) {
+    $envSshKey = $env:AZURE_SSH_PUBLIC_KEY
+    if ($envSshKey) {
+        $SshPublicKey = $envSshKey
+    }
+}
+
+# AdminPassword: AZURE_VM_PASSWORD or AZURE_ADMIN_PASSWORD (plaintext converted to SecureString)
+if (-not $AdminPassword) {
+    $envPassword = $env:AZURE_VM_PASSWORD
+    if (-not $envPassword) { $envPassword = $env:AZURE_ADMIN_PASSWORD }
+    if ($envPassword) {
+        $AdminPassword = ConvertTo-SecureString $envPassword -AsPlainText -Force
+    }
+}
 
 # ==== HELPER FUNCTIONS ====
 
