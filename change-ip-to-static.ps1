@@ -402,12 +402,6 @@ function Invoke-Main {
     }
 }
 
-# Show help if requested
-if ($Help) {
-    Get-Help $MyInvocation.MyCommand.Definition -Full
-    exit 0
-}
-
 # Execute main function
 Invoke-Main
 
