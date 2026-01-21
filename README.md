@@ -15,7 +15,9 @@
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
 
 1. **create-spot-vms.ps1**: Creates Azure Spot VMs with full ARM64 support. Auto-detects latest Ubuntu minimal image based on CPU architecture (ARM64 Cobalt/Ampere or x64 AMD/Intel).
+1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
+1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states. Useful for enabling new VM series (v7 Turin) that require feature flag registration.
 1. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md).
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machine was stopped.  
 
@@ -70,8 +72,8 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      # --series: Specific series list, multi-query (1 page per series)
 
      # ARM-based VMs (Ampere Altra processors) - automatic detection
-     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ARM VMs work natively
-     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm     # Exclude ARM VMs
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ~2 pages (ARM VMs)
+     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm     # ~130 pages
 
      # Windows VMs (default is Linux) - typically 8-15% more expensive
      python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"                   # ~1 page
@@ -85,11 +87,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      python vm-spot-price.py --all-vm-series --cpu 64 --windows --region westus2        # ~5 pages
 
      # Exclude specific regions or VM sizes
-     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"
-     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions "centralindia,eastasia"  # ~2 pages
+     python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --exclude-regions-file regions1.txt        # ~2 pages
 
      # Exclude by SKU pattern (# = digits wildcard)
-     python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns "D#ps_v6,D#pds_v6"
+     python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns "D#ps_v6,D#pds_v6"  # ~130 pages
      # Excludes D4ps_v6, D8ps_v6, D16ps_v6, etc. and all Dpds_v6 variants
 
      # PowerShell integration (text output)
@@ -139,7 +141,15 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Cost Benefit: Allows stopping VMs for cost savings without losing IP assignments
    - Automation: Bulk conversion of all public IPs in subscription
 
-6. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
+6. **create-192core-vm.ps1**: High-core-count spot VM deployment
+   - Purpose: Creates a 192-core Azure Spot VM with automatic region and VM size selection
+   - Pre-flight Quota Check: Checks spot quota in 40 regions before querying prices
+   - Auto-detection: Finds cheapest 192-core VM across regions with available quota
+   - Exclusions: Filters out restricted regions and Extended Zone city names
+   - Progress Display: Shows progress while querying Azure Retail Prices API (~130 pages)
+   - Usage: `pwsh ./create-192core-vm.ps1 [-VMName "name"] [-WhatIf]`
+
+7. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
    - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
      - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
      - Competitive spot pricing for ARM VMs in many regions
@@ -162,7 +172,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
    - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
-7. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
+8. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
@@ -178,7 +188,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html"
      ```
 
-8. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+9. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
    - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
    - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
    - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
