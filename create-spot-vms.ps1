@@ -275,9 +275,9 @@ function Get-LatestUbuntuImage {
 
     foreach ($offer in $offers) {
         try {
-            $availableSkus = az vm image list-skus --publisher Canonical --offer $offer --location $Location --output json 2>$null | ConvertFrom-Json
+            $availableSkus = Get-AzVMImageSku -Location $Location -PublisherName "Canonical" -Offer $offer -ErrorAction SilentlyContinue
             if ($availableSkus -and $availableSkus.Count -gt 0) {
-                $skuNames = $availableSkus | ForEach-Object { $_.name }
+                $skuNames = $availableSkus | ForEach-Object { $_.Skus }
                 foreach ($sku in $skuOrder) {
                     if ($sku -in $skuNames) {
                         Write-Log "Found Ubuntu image: $offer / $sku" "SUCCESS"
