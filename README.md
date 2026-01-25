@@ -1,6 +1,5 @@
 # Introduction - Useful Scripts for Microsoft Azure
 
-1. **change-ip-to-static.ps1**: This script changes all public IP addresses from dynamic to static. Therefore, if you turn off a virtual machine to stop payment for units of time, Azure will not take your IP address but will keep it. When you turn it on, it will boot with the same IP.
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
 1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, and Windows VMs. Examples of use:
   `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (~1 page)
@@ -136,12 +135,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 ### Infrastructure Management Scripts
 
-5. **change-ip-to-static.ps1**: Prevent IP address loss during VM shutdowns
-   - Purpose: Converts dynamic public IPs to static to retain addresses when VMs are deallocated
-   - Cost Benefit: Allows stopping VMs for cost savings without losing IP assignments
-   - Automation: Bulk conversion of all public IPs in subscription
-
-6. **create-192core-vm.ps1**: High-core-count spot VM deployment
+5. **create-192core-vm.ps1**: High-core-count spot VM deployment
    - Purpose: Creates a 192-core Azure Spot VM with automatic region and VM size selection
    - Pre-flight Quota Check: Checks spot quota in 40 regions before querying prices
    - Auto-detection: Finds cheapest 192-core VM across regions with available quota
@@ -149,7 +143,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Progress Display: Shows progress while querying Azure Retail Prices API (~130 pages)
    - Usage: `pwsh ./create-192core-vm.ps1 [-VMName "name"] [-WhatIf]`
 
-7. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
+6. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
    - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
      - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
      - Competitive spot pricing for ARM VMs in many regions
@@ -172,7 +166,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
    - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
-8. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
+7. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
@@ -188,7 +182,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html"
      ```
 
-9. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+8. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
    - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
    - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
    - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
@@ -282,11 +276,6 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName
 
 # Prefer full server image over minimal
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -PreferServer
-```
-
-**Convert dynamic IPs to static (PowerShell 7.5+):**
-```powershell
-pwsh ./change-ip-to-static.ps1 -Force
 ```
 
 ## Advanced Features
