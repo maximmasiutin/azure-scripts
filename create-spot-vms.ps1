@@ -12,19 +12,20 @@
 # Key Switches:
 #   -UseLTS              Use LTS Ubuntu (24.04) instead of latest (25.10)
 #   -PreferServer        Use full server image instead of minimal
-#   -StaticIP            Create Public IP as separate ARM resource (default: inline/ephemeral)
 #   -NoPublicIP          Do not create public IP for VM (requires NAT Gateway or jumpbox)
 #   -UseNatGateway       Create/use NAT Gateway for outbound internet (requires -NoPublicIP)
 #   -ForceOverwrite      Overwrite existing resources without prompting
 #
-# Public IP Modes:
-#   Default (ephemeral): Public IP created inline with VM via REST API, not as separate ARM object
-#     - No separate Public IP resource to manage or clean up
-#     - Automatically deleted when VM is deleted
-#     - No orphaned IPs after spot eviction
-#   -StaticIP: Creates Public IP as standalone ARM resource (traditional approach)
-#     - Separate Public IP object in resource group
-#     - Must be cleaned up separately if VM deletion fails
+# Public IP Notes:
+#   Spot VMs CANNOT use ephemeral public IPs. Azure ephemeral public IPs require ephemeral
+#   OS disks, and Spot VMs do not support ephemeral OS disks. This is a platform limitation.
+#
+#   For Spot VMs, public IPs are created as Standard SKU resources with deleteOption=Delete,
+#   ensuring automatic cleanup when VM is deleted or evicted. Cost: ~$3.65/month per IP.
+#
+#   Alternatives to per-VM public IPs:
+#   - NAT Gateway (-NoPublicIP -UseNatGateway): Shared outbound IP, ~$37/month total
+#   - No public IP (-NoPublicIP): Private network only, use jumpbox/VPN for access
 #
 # NAT Gateway Usage:
 #   NAT Gateway provides outbound internet connectivity for VMs without individual public IPs.
@@ -113,7 +114,6 @@ param(
     [string]$SubnetName = "MySubnet",
     [string]$SubnetAddressPrefix = "10.0.0.0/24",
     [string]$VnetAddressPrefix = "10.0.0.0/16",
-    [switch]$StaticIP,     # Create Public IP as separate ARM resource (default: inline with VM)
     [switch]$NoPublicIP,
     [switch]$UseNatGateway,
 
@@ -855,167 +855,6 @@ function Request-PublicIPQuotaIncrease {
     }
 }
 
-# Create VM with inline public IP (not a separate ARM resource)
-# The public IP is configured as part of the NIC during VM creation via REST API
-# Benefits: No separate Public IP object, auto-cleanup on VM deletion, no orphaned IPs
-function New-VMWithInlineIP {
-    param(
-        [string]$VMName,
-        [string]$ResourceGroupName,
-        [string]$Location,
-        [string]$VMSize,
-        [string]$SubnetId,
-        [string]$AdminUsername,
-        [string]$AdminPassword,
-        [string]$SshPublicKey,
-        [string]$ImagePublisher,
-        [string]$ImageOffer,
-        [string]$ImageSku,
-        [string]$ImageVersion,
-        [string]$StorageAccountType,
-        [int]$OSDiskSizeGB,
-        [string]$SecurityType,
-        [string]$CustomData,
-        [bool]$EnableAcceleratedNetworking,
-        [string]$NsgId
-    )
-
-    $context = Get-AzContext
-    $subscriptionId = $context.Subscription.Id
-    $apiVersion = "2024-07-01"
-
-    # Build OS profile
-    $osProfile = @{
-        computerName = $VMName
-        adminUsername = $AdminUsername
-    }
-
-    if ($SshPublicKey) {
-        $osProfile.linuxConfiguration = @{
-            disablePasswordAuthentication = $true
-            ssh = @{
-                publicKeys = @(@{
-                    path = "/home/$AdminUsername/.ssh/authorized_keys"
-                    keyData = $SshPublicKey
-                })
-            }
-        }
-    } else {
-        $osProfile.adminPassword = $AdminPassword
-        $osProfile.linuxConfiguration = @{
-            disablePasswordAuthentication = $false
-        }
-    }
-
-    if ($CustomData) {
-        $osProfile.customData = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($CustomData))
-    }
-
-    # Build NIC configuration with inline public IP
-    $ipConfig = @{
-        name = "ipconfig1"
-        properties = @{
-            primary = $true
-            subnet = @{ id = $SubnetId }
-            publicIPAddressConfiguration = @{
-                name = "$VMName-pip"
-                sku = @{ name = "Standard"; tier = "Regional" }
-                properties = @{
-                    deleteOption = "Delete"
-                    publicIPAllocationMethod = "Static"
-                    idleTimeoutInMinutes = 4
-                }
-            }
-        }
-    }
-
-    $nicConfig = @{
-        name = "$VMName-nic"
-        properties = @{
-            primary = $true
-            enableAcceleratedNetworking = $EnableAcceleratedNetworking
-            deleteOption = "Delete"
-            ipConfigurations = @($ipConfig)
-        }
-    }
-
-    if ($NsgId) {
-        $nicConfig.properties.networkSecurityGroup = @{ id = $NsgId }
-    }
-
-    # Build VM body
-    $vmBody = @{
-        location = $Location
-        properties = @{
-            hardwareProfile = @{ vmSize = $VMSize }
-            storageProfile = @{
-                imageReference = @{
-                    publisher = $ImagePublisher
-                    offer = $ImageOffer
-                    sku = $ImageSku
-                    version = $ImageVersion
-                }
-                osDisk = @{
-                    name = "$VMName-osdisk"
-                    createOption = "FromImage"
-                    deleteOption = "Delete"
-                    diskSizeGB = $OSDiskSizeGB
-                    managedDisk = @{ storageAccountType = $StorageAccountType }
-                    osType = "Linux"
-                }
-            }
-            osProfile = $osProfile
-            networkProfile = @{
-                networkApiVersion = "2020-11-01"
-                networkInterfaceConfigurations = @($nicConfig)
-            }
-            priority = "Spot"
-            evictionPolicy = "Delete"
-            billingProfile = @{ maxPrice = -1 }
-            diagnosticsProfile = @{
-                bootDiagnostics = @{ enabled = $true }
-            }
-        }
-    }
-
-    # Add security profile for non-ARM VMs
-    if ($SecurityType -and $SecurityType -ne "Standard") {
-        $vmBody.properties.securityProfile = @{ securityType = $SecurityType }
-    }
-
-    $payload = $vmBody | ConvertTo-Json -Depth 10
-    $path = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Compute/virtualMachines/${VMName}?api-version=$apiVersion"
-
-    Write-Log "Creating VM with inline public IP via REST API..." "DEBUG"
-    $response = Invoke-AzRestMethod -Method PUT -Path $path -Payload $payload
-
-    if ($response.StatusCode -eq 200 -or $response.StatusCode -eq 201) {
-        $content = $response.Content | ConvertFrom-Json
-        return @{
-            Success = $true
-            VMName = $VMName
-            ProvisioningState = $content.properties.provisioningState
-        }
-    } elseif ($response.StatusCode -eq 202) {
-        # Async operation - VM is being created
-        return @{
-            Success = $true
-            VMName = $VMName
-            ProvisioningState = "Creating"
-            AsyncOperation = $true
-        }
-    } else {
-        $errorContent = $response.Content | ConvertFrom-Json -ErrorAction SilentlyContinue
-        $errorMessage = if ($errorContent.error.message) { $errorContent.error.message } else { $response.Content }
-        return @{
-            Success = $false
-            VMName = $VMName
-            Error = $errorMessage
-            StatusCode = $response.StatusCode
-        }
-    }
-}
-
 function Show-QuotaIncreaseInstructions {
     param(
         [string]$Location,
@@ -1502,173 +1341,6 @@ $results = @()
 foreach ($vmN in $vmNames) {
     Write-Log "Creating VM: $vmN"
 
-    # ==== INLINE IP PATH (Default) ====
-    # Create VM with inline public IP via REST API (not a separate ARM resource)
-    if (-not $StaticIP -and -not $NoPublicIP) {
-        Write-Log "Using inline public IP (no separate ARM resource)" "INFO"
-
-        # Determine accelerated networking support
-        $supportedPrefixes = @("Standard_D", "Standard_E", "Standard_F", "Standard_L", "Standard_M")
-        $enableAccelNet = $false
-        if (-not $DisableAcceleratedNetworking) {
-            foreach ($prefix in $supportedPrefixes) {
-                if ($VMSize -like "$prefix*") {
-                    $enableAccelNet = $true
-                    break
-                }
-            }
-        }
-
-        # Auto-detect image if needed
-        $isArm = Test-IsArmVM -VMSize $VMSize
-        $actualImageOffer = $ImageOffer
-        $actualImageSku = $ImageSku
-        $actualSecurityType = $SecurityType
-
-        if (-not $ImageOffer -or -not $ImageSku) {
-            $imageInfo = Get-LatestUbuntuImage -Location $Location -IsArm $isArm -UseLTS $UseLTS -PreferServer $PreferServer
-            $actualImageOffer = $imageInfo.Offer
-            $actualImageSku = $imageInfo.Sku
-            Write-Log "Using Ubuntu: $actualImageOffer / $actualImageSku" "INFO"
-        }
-
-        # ARM VMs require Standard security type
-        if ($isArm) {
-            $actualSecurityType = "Standard"
-        }
-
-        # Create NSG if needed
-        $nsgId = $null
-        if (-not $NoNSG) {
-            $nsgName = "$vmN-nsg"
-            $nsg = Get-AzNetworkSecurityGroup -Name $nsgName -ResourceGroupName $ResourceGroupName -ErrorAction SilentlyContinue
-            if (-not $nsg) {
-                try {
-                    $nsgParams = @{
-                        ResourceGroupName = $ResourceGroupName
-                        Location = $Location
-                        Name = $nsgName
-                        ErrorAction = "Stop"
-                    }
-                    if ($BlockSSH) {
-                        Write-Log "Creating NSG: $nsgName (SSH BLOCKED)"
-                        $nsg = New-AzNetworkSecurityGroup @nsgParams
-                    } else {
-                        Write-Log "Creating NSG: $nsgName (SSH ALLOWED)"
-                        $ruleSSH = New-AzNetworkSecurityRuleConfig -Name "AllowSSH" -Description "Allow SSH" `
-                            -Access Allow -Protocol Tcp -Direction Inbound -Priority 1000 `
-                            -SourceAddressPrefix Internet -SourcePortRange * `
-                            -DestinationAddressPrefix * -DestinationPortRange 22
-                        $nsg = New-AzNetworkSecurityGroup @nsgParams -SecurityRules $ruleSSH
-                    }
-                    $nsgId = $nsg.Id
-                } catch {
-                    Write-Log "Error creating NSG: $($_.Exception.Message)" "ERROR"
-                    $results += @{ VMName = $vmN; Success = $false; Error = "Failed to create NSG: $($_.Exception.Message)" }
-                    continue
-                }
-            } else {
-                $nsgId = $nsg.Id
-            }
-        }
-
-        # Clean up orphaned OS disk
-        $osDiskName = "$vmN-osdisk"
-        $existingDisk = Get-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -ErrorAction SilentlyContinue
-        if ($existingDisk) {
-            Write-Log "Deleting orphaned OS disk: $osDiskName" "WARN"
-            Remove-AzDisk -ResourceGroupName $ResourceGroupName -DiskName $osDiskName -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 5
-        }
-
-        # Build custom data if needed
-        $effectiveCustomData = $CustomData
-        if ($MaxWritebackCache -and -not $CustomData) {
-            $effectiveCustomData = @"
-#cloud-config
-write_files:
-  - path: /etc/sysctl.d/99-writeback.conf
-    content: |
-      vm.dirty_bytes = 4294967296
-      vm.dirty_background_bytes = 2147483648
-      vm.dirty_expire_centisecs = 30000
-      vm.dirty_writeback_centisecs = 500
-runcmd:
-  - sysctl --system
-"@
-        }
-
-        # Create VM with inline IP
-        $vmResult = New-VMWithInlineIP `
-            -VMName $vmN `
-            -ResourceGroupName $ResourceGroupName `
-            -Location $Location `
-            -VMSize $VMSize `
-            -SubnetId $subnetId `
-            -AdminUsername $AdminUsername `
-            -AdminPassword $generatedPassword `
-            -SshPublicKey $SshPublicKey `
-            -ImagePublisher $ImagePublisher `
-            -ImageOffer $actualImageOffer `
-            -ImageSku $actualImageSku `
-            -ImageVersion $ImageVersion `
-            -StorageAccountType $StorageAccountType `
-            -OSDiskSizeGB $OSDiskSizeGB `
-            -SecurityType $actualSecurityType `
-            -CustomData $effectiveCustomData `
-            -EnableAcceleratedNetworking $enableAccelNet `
-            -NsgId $nsgId
-
-        if ($vmResult.Success) {
-            Write-Log "VM created: $vmN" "SUCCESS"
-
-            # Wait for VM to be fully provisioned and get public IP
-            $maxWait = 120
-            $waited = 0
-            $publicIp = $null
-            while ($waited -lt $maxWait) {
-                Start-Sleep -Seconds 5
-                $waited += 5
-                try {
-                    $vm = Get-AzVM -ResourceGroupName $ResourceGroupName -Name $vmN -ErrorAction SilentlyContinue
-                    if ($vm -and $vm.ProvisioningState -eq "Succeeded") {
-                        # Get the NIC to find the public IP
-                        $nicId = $vm.NetworkProfile.NetworkInterfaces[0].Id
-                        $nic = Get-AzNetworkInterface -ResourceId $nicId -ErrorAction SilentlyContinue
-                        if ($nic -and $nic.IpConfigurations[0].PublicIpAddress) {
-                            $pipId = $nic.IpConfigurations[0].PublicIpAddress.Id
-                            $pip = Get-AzPublicIpAddress -ResourceId $pipId -ErrorAction SilentlyContinue
-                            if ($pip) {
-                                $publicIp = $pip.IpAddress
-                                Write-Log "Public IP: $publicIp"
-                            }
-                        }
-                        break
-                    }
-                } catch {
-                    # Continue waiting
-                }
-            }
-
-            $results += @{
-                VMName = $vmN
-                Success = $true
-                PublicIP = $publicIp
-                Location = $Location
-                VMSize = $VMSize
-                ImageOffer = $actualImageOffer
-                ImageSku = $actualImageSku
-                InlineIP = $true
-            }
-        } else {
-            Write-Log "VM creation failed: $($vmResult.Error)" "ERROR"
-            $results += @{ VMName = $vmN; Success = $false; Error = $vmResult.Error }
-        }
-
-        continue  # Skip the rest of the loop (Static IP path)
-    }
-
-    # ==== STATIC IP PATH (when -StaticIP is specified) ====
     # NIC
     $nicName = "$vmN-nic"
     $nicParams = @{
@@ -1702,7 +1374,7 @@ runcmd:
         }
     }
 
-    # Public IP as separate ARM resource (only when -StaticIP is specified)
+    # Public IP (with smart retry for Azure propagation delays)
     # Error handling strategy:
     #   - QuotaExceeded/Limit: STOP immediately (quota is hard cap, waiting won't help)
     #   - ResourceGroupNotFound: Wait 30s and retry (propagation issue)
@@ -1710,8 +1382,7 @@ runcmd:
     #   - Network/timeout: Retry with 15s delay
     $pipName = $null
     $nsg = $null
-    if ($StaticIP -and -not $NoPublicIP) {
-        Write-Log "Using Static IP (separate ARM resource)" "INFO"
+    if (-not $NoPublicIP) {
         $pipName = "$vmN-pip"
         $pip = $null
         $pipRetries = 3
