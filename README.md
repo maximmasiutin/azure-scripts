@@ -295,6 +295,22 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName
 
 ## Troubleshooting
 
+### Ephemeral Public IPs and Spot VMs
+
+**Spot VMs cannot use ephemeral public IPs.** This is an Azure platform limitation:
+
+1. Ephemeral public IPs require ephemeral OS disks
+2. Spot VMs do not support ephemeral OS disks
+3. Therefore, Spot VMs must use Standard SKU public IPs (separate ARM resources)
+
+The script creates public IPs with `deleteOption=Delete`, ensuring automatic cleanup when VMs are deleted or evicted. However, each public IP:
+- Costs ~$3.65/month
+- Counts against the StandardPublicIPAddresses quota (default: 20 per region)
+
+**Alternatives for Spot workloads:**
+- **NAT Gateway**: Shared outbound IP for all VMs (~$37/month total)
+- **No public IP**: Private network access via jumpbox or VPN
+
 ### Public IP Quota Errors
 
 Azure has a default limit of **20 Standard Public IPs per region per subscription**. When this limit is reached, you may see "ResourceNotFound" errors during IP creation - this is actually a masked quota exhaustion error, not a missing resource.
