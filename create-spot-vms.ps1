@@ -378,7 +378,7 @@ echo "Shutdown signal sent, syncing filesystems..."
         return @{ Success = $false; Error = $_.Exception.Message }
     }
 
-    # Step 5: Clean up orphaned resources (Public IP, NSG may not auto-delete)
+    # Step 5: Clean up orphaned resources (fallback if auto-delete was not configured)
     Start-Sleep -Seconds 5  # Wait for cascade deletion
 
     if ($pipName) {
@@ -1546,6 +1546,39 @@ foreach ($vmN in $vmNames) {
         }
     }
 
+    # Set NSG delete option via REST API (PowerShell cmdlets don't support this directly)
+    # This ensures NSG is auto-deleted when VM is evicted/deleted
+    if (-not $NoNSG -and $nsg) {
+        try {
+            Write-Log "Configuring NSG auto-delete on NIC..." "DEBUG"
+            $subscriptionId = (Get-AzContext).Subscription.Id
+            $nicApiPath = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroupName/providers/Microsoft.Network/networkInterfaces/$nicName`?api-version=2023-09-01"
+
+            # Get current NIC config
+            $nicResponse = Invoke-AzRestMethod -Method GET -Path $nicApiPath
+            if ($nicResponse.StatusCode -eq 200) {
+                $nicJson = $nicResponse.Content | ConvertFrom-Json
+
+                # Add deleteOption to networkSecurityGroup
+                if ($nicJson.properties.networkSecurityGroup) {
+                    $nicJson.properties.networkSecurityGroup | Add-Member -NotePropertyName "properties" -NotePropertyValue @{ deleteOption = "Delete" } -Force
+
+                    # Update NIC
+                    $updatePayload = $nicJson | ConvertTo-Json -Depth 20 -Compress
+                    $updateResponse = Invoke-AzRestMethod -Method PUT -Path $nicApiPath -Payload $updatePayload
+                    if ($updateResponse.StatusCode -eq 200 -or $updateResponse.StatusCode -eq 201) {
+                        Write-Log "NSG configured for auto-delete on VM deletion/eviction" "SUCCESS"
+                    } else {
+                        Write-Log "Failed to set NSG delete option: HTTP $($updateResponse.StatusCode)" "WARN"
+                    }
+                }
+            }
+        } catch {
+            Write-Log "Could not configure NSG auto-delete: $($_.Exception.Message)" "WARN"
+            Write-Log "NSG may need manual cleanup after VM deletion" "WARN"
+        }
+    }
+
     try {
         # VM Config
         $vmConfig = New-AzVMConfig -VMName $vmN -VMSize $VMSize -Priority "Spot" -EvictionPolicy "Delete" -MaxPrice -1
@@ -1707,7 +1740,7 @@ runcmd:
         # - OS Disk: DeleteOption="Delete" set in Set-AzVMOSDisk
         # - NIC: DeleteOption="Delete" set in Add-AzVMNetworkInterface
         # - Public IP: DeleteOption="Delete" set via REST API after NIC creation
-        # - NSG: No auto-delete (shared resource) - use -NoNSG to skip creation
+        # - NSG: DeleteOption="Delete" set via REST API after NIC creation
 
         # Apply and verify write-back cache settings via RunCommand
         if ($MaxWritebackCache) {
