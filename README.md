@@ -572,11 +572,8 @@ python vm-spot-price.py --cpu 64 --no-burstable --region eastus --exclude-sku-pa
 
 See [Microsoft Learn - Set up preview features](https://learn.microsoft.com/en-us/azure/azure-resource-manager/management/preview-features) for more details.
 
-### Preview Feature Management Scripts
+### Preview Feature Management Script: register-preview-features.ps1
 
-Two scripts are available for managing Azure preview features:
-
-**1. register-preview-features.ps1** (Azure PowerShell, full-featured)
 ```powershell
 # List all preview features
 pwsh register-preview-features.ps1 -ListOnly
@@ -594,53 +591,6 @@ pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -Featu
 pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -ListOnly -ExportPath "features.csv"
 ```
 
-**2. manage-compute-features.ps1** (Azure CLI, simpler, with backup/restore)
-
-Location: `C:\q\linux-fishtest-scripts\manage-compute-features.ps1`
-
-```powershell
-# List all Microsoft.Compute features with summary
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action List
-
-# Save current state to JSON (for backup before changes)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save
-# Creates: compute-features-20260111-143022.json
-
-# Save to specific file
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save -OutputFile "my-backup.json"
-
-# Enable all features except problematic ones (default excludes AutomaticZoneRebalancing)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll
-
-# Enable all except multiple features
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll -ExcludeFeatures @("AutomaticZoneRebalancing", "SomeOther")
-
-# Restore features to saved state (register/unregister as needed)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Restore -InputFile "my-backup.json"
-```
-
-**Workflow for Safe Feature Testing:**
-```powershell
-# 1. Save current state before experimenting
-pwsh manage-compute-features.ps1 -Action Save -OutputFile "before-testing.json"
-
-# 2. Enable preview features you want to test
-az feature register --namespace Microsoft.Compute --name SomeNewFeature
-
-# 3. Test your workloads...
-
-# 4. If issues occur, restore to known-good state
-pwsh manage-compute-features.ps1 -Action Restore -InputFile "before-testing.json"
-```
-
-**Key Differences:**
-| Feature | register-preview-features.ps1 | manage-compute-features.ps1 |
-|---------|------------------------------|----------------------------|
-| Backend | Azure PowerShell (Az module) | Azure CLI (az) |
-| Namespaces | All providers | Microsoft.Compute only |
-| State backup | CSV export | JSON backup/restore |
-| Bulk enable | Yes | Yes (with exclusions) |
-| Restore | No | Yes (diff-based restore) |
 
 ## Security
 
