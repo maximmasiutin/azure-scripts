@@ -11,6 +11,10 @@ Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
 
 Returns sorted (by VM spot price) list of Azure regions.
 Based on: https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices
+VM naming: https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
+
+CPU vendor detection uses the Azure VM naming convention additive features:
+  'a' = AMD-based processor, 'p' = ARM-based processor, neither = Intel
 
 Examples:
   python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
@@ -440,7 +444,8 @@ def is_burstable_vm(sku_name: str) -> bool:
 def is_arm_vm(sku_name: str) -> bool:
     """Check if VM is ARM-based (has 'p' in size designator indicating ARM processor).
 
-    Azure ARM VM naming convention: The 'p' suffix indicates Arm-based processors.
+    See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
+    Azure ARM VM naming convention: The 'p' additive feature indicates Arm-based processors.
     Examples:
         Standard_D4ps_v5 -> True (ARM Ampere Altra)
         Standard_D4pls_v5 -> True (ARM Ampere Altra, low memory)
@@ -462,6 +467,67 @@ def is_arm_vm(sku_name: str) -> bool:
     for pattern in arm_patterns:
         if re.match(pattern, sku_name, re.IGNORECASE):
             return True
+    return False
+
+
+def is_amd_vm(sku_name: str) -> bool:
+    """Check if VM is AMD-based (has 'a' in size designator indicating AMD processor).
+
+    See https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions
+    Azure AMD VM naming convention: The 'a' additive feature indicates AMD processors.
+    Examples:
+        Standard_D4as_v5 -> True (AMD EPYC)
+        Standard_D4ads_v5 -> True (AMD EPYC, with local disk)
+        Standard_E64-16as_v7 -> True (AMD, constrained CPU)
+        Standard_F64ams_v6 -> True (AMD, high memory)
+        Standard_D4s_v5 -> False (Intel)
+        Standard_D4ps_v5 -> False (ARM)
+        Dasv5 -> True (series name)
+        Famsv6 -> True (series name, AMD high memory)
+    """
+    sku_name = sku_name.replace("Standard_", "")
+    amd_patterns = [
+        r"^[A-Za-z]+\d+(?:-\d+)?a[ldms]*_v\d+",  # SKU: D4as_v5, E64-16as_v7
+        r"^[A-Za-z]+\d+(?:-\d+)?a[ldms]*_[A-Za-z]",  # SKU with suffix: NV72ads_A10_v5
+        r"^[A-Za-z]+a[ldms]*v\d+$",  # Series: Dasv5, Falsv7, Famsv6
+    ]
+    for pattern in amd_patterns:
+        if re.match(pattern, sku_name, re.IGNORECASE):
+            return True
+    return False
+
+
+def is_intel_vm(sku_name: str) -> bool:
+    """Check if VM is Intel-based (not AMD and not ARM).
+
+    Intel VMs have neither 'a' nor 'p' in the modifier position.
+    Examples:
+        Standard_D4s_v5 -> True (Intel Xeon)
+        Standard_F8s_v2 -> True (Intel Xeon)
+        Standard_D64ls_v6 -> True (Intel, low memory)
+        Standard_D4as_v5 -> False (AMD)
+        Standard_D4ps_v5 -> False (ARM)
+    """
+    return not is_amd_vm(sku_name) and not is_arm_vm(sku_name)
+
+
+def should_skip_by_vendor(sku_name: str, args: Any) -> bool:
+    """Check if a VM should be skipped based on CPU vendor flags.
+
+    Returns True if the VM should be filtered out.
+    """
+    if getattr(args, "intel_only", False) and not is_intel_vm(sku_name):
+        return True
+    if getattr(args, "amd_only", False) and not is_amd_vm(sku_name):
+        return True
+    if getattr(args, "arm_only", False) and not is_arm_vm(sku_name):
+        return True
+    if getattr(args, "exclude_intel", False) and is_intel_vm(sku_name):
+        return True
+    if getattr(args, "exclude_amd", False) and is_amd_vm(sku_name):
+        return True
+    if getattr(args, "exclude_arm", False) and is_arm_vm(sku_name):
+        return True
     return False
 
 
@@ -529,6 +595,14 @@ VM_SERIES_D_INTEL_V6 = [
     "Dldsv6",  # 128 vCPUs, 256 GiB (2:1)
 ]
 
+# Intel v7 (Xeon 6 Granite Rapids) - Preview
+VM_SERIES_D_INTEL_V7 = [
+    "Dsv7",
+    "Ddsv7",  # (4:1)
+    "Dlsv7",
+    "Dldsv7",  # (2:1, low memory)
+]
+
 # AMD v6 (EPYC 9004 Genoa @ 3.7 GHz)
 VM_SERIES_D_AMD_V6 = [
     "Dasv6",
@@ -574,6 +648,7 @@ VM_SERIES_COMPUTE_OPTIMIZED = (
 VM_SERIES_GENERAL_PURPOSE = (
     VM_SERIES_D_INTEL_V5
     + VM_SERIES_D_INTEL_V6
+    + VM_SERIES_D_INTEL_V7
     + VM_SERIES_D_AMD_V5
     + VM_SERIES_D_AMD_V6
     + VM_SERIES_D_AMD_V7
@@ -612,6 +687,14 @@ VM_SERIES_E_INTEL_V6 = [
     "Ebdsv6",  # 128 vCPUs, storage optimized
 ]
 
+# Intel v7 (Xeon 6 Granite Rapids) - Preview
+VM_SERIES_E_INTEL_V7 = [
+    "Esv7",
+    "Edsv7",  # (8:1)
+    "Ebsv7",
+    "Ebdsv7",  # storage optimized
+]
+
 # AMD v6 (EPYC 9004 Genoa @ 3.7 GHz)
 VM_SERIES_E_AMD_V6 = [
     "Easv6",
@@ -642,6 +725,7 @@ VM_SERIES_E_ARM_V6 = [
 VM_SERIES_MEMORY_OPTIMIZED = (
     VM_SERIES_E_INTEL_V5
     + VM_SERIES_E_INTEL_V6
+    + VM_SERIES_E_INTEL_V7
     + VM_SERIES_E_AMD_V5
     + VM_SERIES_E_AMD_V6
     + VM_SERIES_E_AMD_V7
@@ -654,8 +738,9 @@ VM_SERIES_NON_BURSTABLE = VM_SERIES_GENERAL_COMPUTE + VM_SERIES_MEMORY_OPTIMIZED
 
 # Latest generation only (v6/v7) - for fast queries
 VM_SERIES_LATEST = (
-    # D-series latest (Intel v6 + AMD v6/v7 + ARM v6)
+    # D-series latest (Intel v6/v7 + AMD v6/v7 + ARM v6)
     VM_SERIES_D_INTEL_V6
+    + VM_SERIES_D_INTEL_V7
     + VM_SERIES_D_AMD_V6
     + VM_SERIES_D_AMD_V7
     + VM_SERIES_D_ARM_V6
@@ -664,8 +749,9 @@ VM_SERIES_LATEST = (
     VM_SERIES_F_AMD_V6
     + VM_SERIES_F_AMD_V7
     +
-    # E-series latest (Intel v6 + AMD v6/v7 + ARM v6)
+    # E-series latest (Intel v6/v7 + AMD v6/v7 + ARM v6)
     VM_SERIES_E_INTEL_V6
+    + VM_SERIES_E_INTEL_V7
     + VM_SERIES_E_AMD_V6
     + VM_SERIES_E_AMD_V7
     + VM_SERIES_E_ARM_V6
@@ -720,8 +806,8 @@ def _process_per_core_item(
         if args.no_burstable and is_burstable:
             return
 
-        # Filter ARM VMs if --exclude-arm is set
-        if getattr(args, "exclude_arm", False) and is_arm_vm(arm_sku_name):
+        # Filter by CPU vendor
+        if should_skip_by_vendor(arm_sku_name, args):
             return
 
         # Filter for general-compute: only D and F series (non-burstable)
@@ -906,6 +992,31 @@ def main() -> None:
         help="Exclude ARM-based VMs (those with p suffix like D4ps_v5)",
     )
     parser.add_argument(
+        "--exclude-intel",
+        action="store_true",
+        help="Exclude Intel-based VMs",
+    )
+    parser.add_argument(
+        "--exclude-amd",
+        action="store_true",
+        help="Exclude AMD-based VMs (those with a suffix like D4as_v5)",
+    )
+    parser.add_argument(
+        "--intel-only",
+        action="store_true",
+        help="Show only Intel-based VMs (mutually exclusive with --amd-only, --arm-only)",
+    )
+    parser.add_argument(
+        "--amd-only",
+        action="store_true",
+        help="Show only AMD-based VMs (mutually exclusive with --intel-only, --arm-only)",
+    )
+    parser.add_argument(
+        "--arm-only",
+        action="store_true",
+        help="Show only ARM-based VMs (mutually exclusive with --intel-only, --amd-only)",
+    )
+    parser.add_argument(
         "--return-region-json",
         action="store_true",
         help="Return single region output in JSON format (for PowerShell parsing)",
@@ -936,6 +1047,36 @@ def main() -> None:
     )
 
     args: Namespace = parser.parse_args()
+
+    # Validate CPU vendor flags
+    only_flags = [
+        ("--intel-only", getattr(args, "intel_only", False)),
+        ("--amd-only", getattr(args, "amd_only", False)),
+        ("--arm-only", getattr(args, "arm_only", False)),
+    ]
+    active_only = [name for name, val in only_flags if val]
+    if len(active_only) > 1:
+        logging.error(
+            f"Cannot specify multiple --*-only flags: {', '.join(active_only)}"
+        )
+        sys.exit(1)
+    if getattr(args, "intel_only", False) and getattr(args, "exclude_intel", False):
+        logging.error("Cannot specify both --intel-only and --exclude-intel")
+        sys.exit(1)
+    if getattr(args, "amd_only", False) and getattr(args, "exclude_amd", False):
+        logging.error("Cannot specify both --amd-only and --exclude-amd")
+        sys.exit(1)
+    if getattr(args, "arm_only", False) and getattr(args, "exclude_arm", False):
+        logging.error("Cannot specify both --arm-only and --exclude-arm")
+        sys.exit(1)
+    exclude_count = sum([
+        getattr(args, "exclude_intel", False),
+        getattr(args, "exclude_amd", False),
+        getattr(args, "exclude_arm", False),
+    ])
+    if exclude_count >= 3:
+        logging.error("Cannot exclude all three CPU vendors (Intel, AMD, ARM)")
+        sys.exit(1)
 
     # Configure deprecation warnings (suppress by default unless explicitly requested)
     if not args.show_deprecation_warnings:
@@ -1127,6 +1268,22 @@ def main() -> None:
         else:
             # Default: all VMs - use single query
             use_single_query = True
+
+        # Pre-filter series list by vendor to avoid unnecessary API calls
+        if series_list:
+            original_count = len(series_list)
+            series_list = [
+                s for s in series_list if not should_skip_by_vendor(s, args)
+            ]
+            if len(series_list) < original_count:
+                logging.debug(
+                    f"Vendor filter reduced series from {original_count} to {len(series_list)}"
+                )
+            if not series_list:
+                logging.error(
+                    "No VM series remain after applying CPU vendor filters"
+                )
+                sys.exit(1)
 
         try:
             if use_single_query:
@@ -1472,8 +1629,8 @@ def main() -> None:
                         if cores != cpu_filter:
                             continue
 
-                    # Filter ARM VMs if --exclude-arm is set
-                    if getattr(args, "exclude_arm", False) and is_arm_vm(arm_sku_name):
+                    # Filter by CPU vendor
+                    if should_skip_by_vendor(arm_sku_name, args):
                         continue
 
                     # Filter excluded regions
@@ -1770,13 +1927,23 @@ def main() -> None:
                 f"Filtered out {filtered_count} entries from excluded regions"
             )
 
-    # Filter out ARM VMs if --exclude-arm is set
-    if args.exclude_arm:
+    # Filter by CPU vendor
+    has_vendor_filter = (
+        getattr(args, "intel_only", False)
+        or getattr(args, "amd_only", False)
+        or getattr(args, "arm_only", False)
+        or getattr(args, "exclude_intel", False)
+        or getattr(args, "exclude_amd", False)
+        or getattr(args, "exclude_arm", False)
+    )
+    if has_vendor_filter:
         original_count = len(table_data)
-        table_data = [row for row in table_data if not is_arm_vm(row[0])]
+        table_data = [
+            row for row in table_data if not should_skip_by_vendor(row[0], args)
+        ]
         filtered_count = original_count - len(table_data)
         if filtered_count > 0:
-            logging.debug(f"Filtered out {filtered_count} ARM VM entries")
+            logging.debug(f"Filtered out {filtered_count} entries by CPU vendor")
 
     # Output results
     if return_region:

@@ -1,7 +1,7 @@
 # Introduction - Useful Scripts for Microsoft Azure
 
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
-1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, and Windows VMs. Examples of use:
+1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, CPU vendor filtering (Intel/AMD/ARM), and Windows VMs. Examples of use:
   `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (~1 page)
   `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region` (~4 pages)
   `python vm-spot-price.py --cpu 64 --no-burstable --region eastus` (~4 pages)
@@ -31,8 +31,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Multi-VM Comparison: Compare multiple VM sizes at once with `--vm-sizes` parameter
    - **Per-Core Pricing**: Find cheapest spot price per vCPU core across VM series with `--min-cores` and `--max-cores`
    - **ARM VM Support**: Supports ARM-based VMs (e.g., D4ps_v5, D4pls_v5) with automatic detection and proper Azure API querying
+   - **CPU Vendor Filtering**: Filter by CPU vendor using [Azure VM naming conventions](https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions) ('a' = AMD, 'p' = ARM, neither = Intel):
+     - Include-only: `--intel-only`, `--amd-only`, `--arm-only` (mutually exclusive)
+     - Exclude: `--exclude-intel`, `--exclude-amd`, `--exclude-arm` (can combine up to 2)
    - **Windows VM Support**: Use `--windows` to search for Windows VMs instead of Linux (default). Windows VMs typically cost 8-15% more due to OS license fees.
-   - Exclusion Filters: Exclude specific regions, VM sizes, SKU patterns (# = digits), or ARM VMs via `--exclude-arm`
+   - Exclusion Filters: Exclude specific regions, VM sizes, SKU patterns (# = digits), or filter by CPU vendor
    - Advanced Options: Series pattern matching, non-spot instance filtering, single region output
    - **Quality Filtering**: Automatically filters out invalid or zero-price (free tier) instances to ensure valid spot pricing.
    - PowerShell Integration: `--return-region` outputs "region vmsize price unit" format; `--return-region-json` outputs JSON for direct parsing
@@ -65,14 +68,24 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
      # Per-core filtering options
      # --general-compute: Only D+F series, single query (~4 pages/region)
-     # --latest: Only v6/v7 series, multi-query (1 page per 29 series)
+     # --latest: Only v6/v7 series, multi-query (1 page per series)
      # --no-burstable: Exclude B-series, single query (~4 pages/region)
      # --burstable-only: Only B-series, single query (~4 pages/region)
      # --series: Specific series list, multi-query (1 page per series)
+     # --intel-only/--amd-only/--arm-only: Filter by CPU vendor (mutually exclusive)
+     # --exclude-intel/--exclude-amd/--exclude-arm: Exclude CPU vendor (combinable)
+
+     # CPU vendor filtering (see https://learn.microsoft.com/en-us/azure/virtual-machines/vm-naming-conventions)
+     python vm-spot-price.py --all-vm-series --cpu 4 --region westus3 --intel-only   # Intel only
+     python vm-spot-price.py --all-vm-series --cpu 4 --region westus3 --amd-only     # AMD only
+     python vm-spot-price.py --all-vm-series --cpu 4 --region westus3 --arm-only     # ARM only
+     python vm-spot-price.py --all-vm-series --cpu 4 --region westus3 --exclude-amd  # Intel + ARM
+     python vm-spot-price.py --latest --cpu 8 --intel-only --return-region           # latest Intel v6/v7
+     python vm-spot-price.py --latest --cpu 8 --amd-only --return-region             # latest AMD v6/v7
+     python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-arm              # ~130 pages
 
      # ARM-based VMs (Ampere Altra processors) - automatic detection
      python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5" --return-region  # ~2 pages (ARM VMs)
-     python vm-spot-price.py --min-cores 4 --max-cores 16 --exclude-arm     # ~130 pages
 
      # Windows VMs (default is Linux) - typically 8-15% more expensive
      python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"                   # ~1 page
