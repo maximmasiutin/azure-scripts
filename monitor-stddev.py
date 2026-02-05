@@ -5,7 +5,7 @@ monitor-stddev: A website monitoring script that evaluates site stability and he
 It goes beyond simple up/down checks by calculating the standard deviation of latency
 to detect inconsistent performance (jitter) and stability issues.
 
-Copyright (C) 2025 Maxim Masiutin. All rights reserved.
+Copyright (C) 2025-2026 Maxim Masiutin. All rights reserved.
 
 See monitor-stddev.md for details.
 
