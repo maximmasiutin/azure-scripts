@@ -644,6 +644,22 @@ def render_history_to_png_file(
         print(f"Error saving PNG file {validated_path}: {e}", file=stderr)
 
 
+def get_firefox_impersonate() -> str:
+    """Get best available Firefox impersonation for curl_cffi.
+
+    Returns newest available Firefox version, falling back to Chrome.
+    """
+    try:
+        from curl_cffi.requests import BrowserType
+        # Prefer newest Firefox version available
+        for browser in ['firefox144', 'firefox135', 'firefox133']:
+            if hasattr(BrowserType, browser):
+                return browser
+    except (ImportError, AttributeError):
+        pass
+    return "chrome"  # Fallback
+
+
 def build_request_headers(
     user_agent: Optional[str], authorization: Optional[str]
 ) -> Dict[str, str]:
@@ -705,8 +721,11 @@ def monitor_website(
         )
         saver = FileSaver(save_name_json, save_name_html)
 
-    # Use Chrome impersonation for TLS fingerprint to avoid bot detection
+    # Use browser impersonation for TLS fingerprint to avoid bot detection
+    # If user-agent contains "Firefox", use Firefox impersonation; otherwise Chrome
     browser_impersonate = "chrome"
+    if user_agent and "firefox" in user_agent.lower():
+        browser_impersonate = get_firefox_impersonate()
     session = Session(impersonate=browser_impersonate) if use_session else None
     headers = build_request_headers(user_agent, authorization)
 
@@ -1012,7 +1031,10 @@ def test_url(
     print(f"Timeout: {request_timeout}s")
     print("-" * 60)
 
+    # Use browser impersonation matching user-agent
     browser_impersonate = "chrome"
+    if user_agent and "firefox" in user_agent.lower():
+        browser_impersonate = get_firefox_impersonate()
     headers = build_request_headers(user_agent, authorization)
     session = Session(impersonate=browser_impersonate) if use_session else None
 
