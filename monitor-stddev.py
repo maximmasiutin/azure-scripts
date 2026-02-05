@@ -644,6 +644,7 @@ def render_history_to_png_file(
         print(f"Error saving PNG file {validated_path}: {e}", file=stderr)
 
 
+
 def get_firefox_impersonate() -> str:
     """Get best available Firefox impersonation for curl_cffi.
 
