@@ -1338,6 +1338,9 @@ if ($GracefulDelete) {
 if (-not $PSBoundParameters.ContainsKey('AdminPassword')) {
     $AdminPassword = $null
 }
+if (-not $PSBoundParameters.ContainsKey('AdminUsername')) {
+    $AdminUsername = "azureuser"
+}
 $credData = Get-VMCredentials
 $credential = $credData.Credential
 $generatedPassword = $credData.Password
