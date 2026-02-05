@@ -571,7 +571,7 @@ function Get-VMCredentials {
     }
 
     $plaintextPassword = $null
-    if ($null -eq $AdminPassword -or $AdminPassword.Length -eq 0) {
+    if (-not $AdminPassword) {
         # Cryptographically strong password generation
         # Length: 28
         # Alphabet: [a-zA-Z0-9-_] (64 characters)
@@ -1332,6 +1332,12 @@ if ($GracefulDelete) {
 }
 
 # ==== CREDENTIALS ====
+# PowerShell 7.5 may populate [SecureString] parameters with phantom values
+# from $PSDefaultParameterValues or Azure module defaults even when not passed.
+# Use $PSBoundParameters (script-level) to detect if actually provided by caller.
+if (-not $PSBoundParameters.ContainsKey('AdminPassword')) {
+    $AdminPassword = $null
+}
 $credData = Get-VMCredentials
 $credential = $credData.Credential
 $generatedPassword = $credData.Password
