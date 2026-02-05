@@ -7,7 +7,7 @@
 """
 vm-spot-price.py - Azure VM Spot Price Finder
 
-Copyright 2023-2025 by Maxim Masiutin. All rights reserved.
+Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 
 Returns sorted (by VM spot price) list of Azure regions.
 Based on: https://learn.microsoft.com/en-us/rest/api/cost-management/retail-prices/azure-retail-prices

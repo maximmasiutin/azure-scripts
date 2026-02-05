@@ -571,7 +571,7 @@ function Get-VMCredentials {
     }
 
     $plaintextPassword = $null
-    if (-not $AdminPassword) {
+    if ($null -eq $AdminPassword -or $AdminPassword.Length -eq 0) {
         # Cryptographically strong password generation
         # Length: 28
         # Alphabet: [a-zA-Z0-9-_] (64 characters)
@@ -1946,10 +1946,22 @@ echo "dirty_background_bytes=`$(sysctl -n vm.dirty_background_bytes)"
                         }
                     }
 
+                    # Get public IP for the successfully created VM
+                    if (-not $NoPublicIP -and $pipName) {
+                        try {
+                            $publicIpObj = Get-AzPublicIpAddress -Name $pipName -ResourceGroupName $ResourceGroupName -ErrorAction Stop
+                            $resultEntry.PublicIP = $publicIpObj.IpAddress
+                            Write-Log "Public IP: $($resultEntry.PublicIP)"
+                        } catch {
+                            Write-Log "Failed to retrieve Public IP: $($_.Exception.Message)" "WARN"
+                        }
+                    }
+
                     # Update result entry to success
                     $resultEntry.Success = $true
                     $resultEntry.Remove('Error')
                     $resultEntry.SecurityTypeRetry = $true
+                    $resultEntry.AdminPassword = $generatedPassword
                 } catch {
                     $retryError = $_.Exception.Message
                     Write-Log "Retry with Standard security also failed: $retryError" "ERROR"

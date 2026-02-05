@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 # monitor-eviction.py
-# Copyright 2023 by Maxim Masiutin. All rights reserved.
+# Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 
 # This script monitors an Azure spot VM on which it is running to determine whether
 # the VM is being evicted. Upon detecting an eviction event, it optionally executes
