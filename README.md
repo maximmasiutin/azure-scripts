@@ -13,7 +13,7 @@
   `python blob-storage-price.py --blob-types "General Block Blob v2"`  
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
 
-1. **create-spot-vms.ps1**: Creates Azure Spot VMs with full ARM64 support. Auto-detects latest Ubuntu minimal image based on CPU architecture (ARM64 Cobalt/Ampere or x64 AMD/Intel).
+1. **create-spot-vms.ps1**: Creates Azure Spot VMs with full ARM64 support. Dynamically discovers latest Ubuntu minimal from Canonical via Azure API. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
 1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states. Useful for enabling new VM series (v7 Turin) that require feature flag registration.
@@ -160,10 +160,11 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
      - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
      - Competitive spot pricing for ARM VMs in many regions
-   - **Automatic Ubuntu Image Detection**: Queries Azure API for newest available Ubuntu
-     - Default: Latest non-LTS Ubuntu minimal (25.10) - smaller, faster boot
+   - **Dynamic Ubuntu Image Discovery**: Queries Canonical offers via Azure API (no hardcoded version list)
+     - Default: Latest non-LTS Ubuntu minimal - smaller, faster boot
      - Minimal images preferred over full server images
-     - Use `-UseLTS` to prefer LTS versions (24.04) for production workloads
+     - Use `-UseLTS` to prefer LTS versions for production workloads
+     - Use `-LTSOffset` to select older LTS: `-LTSOffset -1` = previous LTS, `-2` = two back
      - Use `-PreferServer` to use full server image instead of minimal
    - Features: Batch creation of multiple spot instances with consistent configuration
    - Cost Optimization: Leverages spot pricing for development/testing environments
@@ -278,14 +279,17 @@ sudo systemctl status robust-swap-setup.service
 **Create Azure spot VMs (PowerShell 7.5+):**
 ```powershell
 # Run with pwsh (PowerShell 7.5+)
-# Default: auto-detects latest Ubuntu (25.10 minimal) - ideal for spot VMs
+# Default: auto-discovers latest Ubuntu minimal from Canonical (no hardcoded versions)
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm"
 
 # ARM VM with auto-detected ARM64 Ubuntu minimal image
 pwsh ./create-spot-vms.ps1 -Location "centralindia" -VMSize "Standard_D64pls_v6" -VMName "arm-vm"
 
-# Use LTS Ubuntu (24.04) for production workloads
+# Use latest LTS Ubuntu for production workloads
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -UseLTS
+
+# Use previous LTS (e.g., 22.04 if 24.04 is current)
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -UseLTS -LTSOffset -1
 
 # Prefer full server image over minimal
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -PreferServer

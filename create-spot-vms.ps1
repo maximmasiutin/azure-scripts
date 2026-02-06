@@ -4,13 +4,14 @@
 #
 # Features:
 #   - Full ARM64 support: ARM VMs (D*p*_v5, D*p*_v6) auto-detected
-#   - Latest Ubuntu minimal: Auto-selects newest Ubuntu (25.10) with minimal image
+#   - Dynamic Ubuntu discovery: Queries Azure API for newest available Ubuntu (no hardcoded versions)
 #   - Architecture detection: Automatically uses ARM64 or x64 image based on VM size
 #   - Spot pricing: Creates cost-effective spot instances with eviction handling
 #   - NAT Gateway: Share one public IP across multiple VMs for cost savings
 #
 # Key Switches:
-#   -UseLTS              Use LTS Ubuntu (24.04) instead of latest (25.10)
+#   -UseLTS              Use LTS Ubuntu instead of latest non-LTS (dynamically discovered)
+#   -LTSOffset <int>     Select older LTS: 0=latest, -1=previous, -2=two back, etc.
 #   -PreferServer        Use full server image instead of minimal
 #   -NoPublicIP          Do not create public IP for VM (requires NAT Gateway or jumpbox)
 #   -UseNatGateway       Create/use NAT Gateway for outbound internet (requires -NoPublicIP)
@@ -126,6 +127,7 @@ param(
     [int]$OSDiskSizeGB = 32,  # Azure tier S4 (32 GiB) - same price as 30 GiB
     [string]$SecurityType = "TrustedLaunch",
     [switch]$UseLTS,      # Use LTS Ubuntu (24.04) instead of latest non-LTS (default: non-LTS)
+    [int]$LTSOffset = 0,  # 0 = latest LTS, -1 = previous LTS, -2 = two back, etc.
     [switch]$PreferServer,  # Prefer server over minimal image
 
     # Authentication
@@ -245,17 +247,50 @@ function Get-LatestUbuntuImage {
         [string]$Location,
         [bool]$IsArm,
         [bool]$UseLTS = $false,
+        [int]$LTSOffset = 0,  # 0 = latest LTS, -1 = previous LTS, -2 = two back
         [bool]$PreferServer = $false
     )
 
-    # Ubuntu image offers in order of preference (newest first)
-    # Non-LTS versions (default for spot VMs - latest features, stability less critical)
-    $nonLtsOffers = @("ubuntu-25_10", "ubuntu-25_04", "ubuntu-24_10")
-    # LTS versions (use with -UseLTS for production workloads)
-    $ltsOffers = @("ubuntu-24_04-lts", "ubuntu-22_04-lts")
+    # Dynamically discover Ubuntu offers from Canonical only (no hardcoded version list)
+    # PublisherName "Canonical" ensures only Canonical's own offers, not third-party images
+    $allOffers = Get-AzVMImageOffer -Location $Location -PublisherName "Canonical" -ErrorAction SilentlyContinue
+    # Regex matches only standard free Ubuntu: ubuntu-XX_YY or ubuntu-XX_YY-lts
+    # Excludes commercial/third-party variants: pro, cis, fips, minimal-daily, server-preview, etc.
+    $ubuntuOffers = $allOffers | Where-Object { $_.Offer -match '^ubuntu-\d{2}_\d{2}(-lts)?$' } |
+        Sort-Object {
+            if ($_.Offer -match '(\d{2})_(\d{2})') { [int]$Matches[1] * 100 + [int]$Matches[2] } else { 0 }
+        } -Descending
+
+    $nonLtsOffers = @($ubuntuOffers | Where-Object { $_.Offer -notlike '*-lts' } | ForEach-Object { $_.Offer })
+    $ltsOffers = @($ubuntuOffers | Where-Object { $_.Offer -like '*-lts' } | ForEach-Object { $_.Offer })
+
+    Write-Log "Discovered Ubuntu offers - non-LTS: [$($nonLtsOffers -join ', ')], LTS: [$($ltsOffers -join ', ')]" "DEBUG"
+
+    # Apply LTSOffset: skip N newest LTS offers (0=latest, -1=previous, -2=two back)
+    # Normalize: accept both -1 and 1 as "previous LTS"
+    $skip = [Math]::Abs($LTSOffset)
+    if ($UseLTS -and $skip -gt 0 -and $ltsOffers.Count -gt $skip) {
+        $ltsOffers = $ltsOffers[$skip..($ltsOffers.Count - 1)]
+        Write-Log "LTSOffset=${LTSOffset}: skipped $skip newest LTS, remaining: [$($ltsOffers -join ', ')]" "INFO"
+    } elseif ($UseLTS -and $skip -gt 0 -and $ltsOffers.Count -le $skip) {
+        Write-Log "LTSOffset=${LTSOffset}: not enough LTS offers (have $($ltsOffers.Count)), using oldest available" "WARN"
+        if ($ltsOffers.Count -gt 0) {
+            $ltsOffers = @($ltsOffers[-1])
+        }
+    }
 
     # Default: prefer non-LTS (newest), fall back to LTS
     $offers = if ($UseLTS) { $ltsOffers + $nonLtsOffers } else { $nonLtsOffers + $ltsOffers }
+
+    if ($offers.Count -eq 0) {
+        # Fallback to known offers if API returned nothing
+        Write-Log "No Ubuntu offers discovered, using hardcoded fallback list" "WARN"
+        $offers = if ($UseLTS) {
+            @("ubuntu-24_04-lts", "ubuntu-22_04-lts")
+        } else {
+            @("ubuntu-25_10", "ubuntu-25_04", "ubuntu-24_10", "ubuntu-24_04-lts", "ubuntu-22_04-lts")
+        }
+    }
 
     # SKU preferences based on architecture
     if ($IsArm) {
@@ -1609,7 +1644,7 @@ foreach ($vmN in $vmNames) {
         if (-not $ImageOffer -or -not $ImageSku) {
             # Auto-detect best Ubuntu image for this VM type and location
             Write-Log "Auto-detecting Ubuntu image for $VMSize in $Location..."
-            $imageInfo = Get-LatestUbuntuImage -Location $Location -IsArm $isArm -UseLTS $UseLTS -PreferServer $PreferServer
+            $imageInfo = Get-LatestUbuntuImage -Location $Location -IsArm $isArm -UseLTS $UseLTS -LTSOffset $LTSOffset -PreferServer $PreferServer
             $actualImageOffer = $imageInfo.Offer
             $actualImageSku = $imageInfo.Sku
             Write-Log "Using Ubuntu: $actualImageOffer / $actualImageSku (minimal: $($imageInfo.IsMinimal))" "INFO"
