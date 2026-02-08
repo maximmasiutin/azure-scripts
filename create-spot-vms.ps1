@@ -608,49 +608,61 @@ function Get-VMCredentials {
     $plaintextPassword = $null
     if (-not $AdminPassword) {
         # Cryptographically strong password generation
-        # Length: 28
-        # Alphabet: [a-zA-Z0-9-_] (64 characters)
-        # 64 divides 256 evenly (256 = 64 * 4), so modulo 64 introduces NO bias.
+        # Length: 20
+        # Alphabet: [a-zA-Z0-9_] (63 characters)
+        # Azure requires 3 of 4 complexity classes (upper, lower, digit, special).
+        # Underscore counts as special character for Azure.
 
-        $length = 28
-        $alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+        $length = 20
+        $alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_"
 
-        # Generate random bytes
-        $bytes = New-Object byte[] $length
+        # Generate random bytes (use extra to avoid modulo bias with 63-char alphabet)
+        $bytes = New-Object byte[] ($length * 2)
         [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
 
-        # Map bytes to characters
-        $generatedPwd = -join ($bytes | ForEach-Object { $alphabet[$_ % 64] })
+        # Rejection sampling to avoid modulo bias (63 does not divide 256 evenly)
+        $generatedChars = @()
+        foreach ($byte in $bytes) {
+            if ($generatedChars.Count -ge $length) { break }
+            if ($byte -lt 252) {  # 252 = 63 * 4, reject 252-255 to avoid bias
+                $generatedChars += $alphabet[$byte % 63]
+            }
+        }
+        # Fallback: if rejection sampling didn't produce enough chars (extremely unlikely)
+        while ($generatedChars.Count -lt $length) {
+            $extraBytes = New-Object byte[] 4
+            [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($extraBytes)
+            foreach ($byte in $extraBytes) {
+                if ($generatedChars.Count -ge $length) { break }
+                if ($byte -lt 252) { $generatedChars += $alphabet[$byte % 63] }
+            }
+        }
+        $generatedPwd = -join $generatedChars
 
         # Ensure Azure complexity (3 of 4: Upper, Lower, Digit, Special)
-        # With length 28, statistical probability of missing a class is near zero,
-        # but we check to be safe. If missing, we inject one of each at random positions.
         $hasUpper = $generatedPwd -cmatch "[A-Z]"
         $hasLower = $generatedPwd -cmatch "[a-z]"
         $hasDigit = $generatedPwd -match "[0-9]"
-        $hasSpecial = $generatedPwd -match "[-_]"
+        $hasSpecial = $generatedPwd -match "[_]"
 
         if (-not ($hasUpper -and $hasLower -and $hasDigit -and $hasSpecial)) {
-            # Fallback: strict injection if RNG somehow missed a class (extremely unlikely)
             $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
             $b = New-Object byte[] 4
             $rng.GetBytes($b)
 
-            # Convert string to char array to modify
             $chars = $generatedPwd.ToCharArray()
 
-            # Inject missing classes at random indices
             if (-not $hasUpper)   { $chars[$b[0] % $length] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[$b[0] % 26] }
             if (-not $hasLower)   { $chars[$b[1] % $length] = "abcdefghijklmnopqrstuvwxyz"[$b[1] % 26] }
             if (-not $hasDigit)   { $chars[$b[2] % $length] = "0123456789"[$b[2] % 10] }
-            if (-not $hasSpecial) { $chars[$b[3] % $length] = "-_"[$b[3] % 2] }
+            if (-not $hasSpecial) { $chars[$b[3] % $length] = '_' }
 
             $generatedPwd = -join $chars
         }
 
         $script:AdminPassword = ConvertTo-SecureString $generatedPwd -AsPlainText -Force
         $plaintextPassword = $generatedPwd
-        Write-Log "Generated cryptographically strong admin password (28 chars)"
+        Write-Log "Generated admin password ($length chars, alphanumeric + underscore)"
     }
 
     return @{ Credential = New-Object PSCredential($AdminUsername, $script:AdminPassword); Password = $plaintextPassword }
