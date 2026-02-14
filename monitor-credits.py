@@ -339,15 +339,16 @@ def stop_services(services, hook):
     for service in services:
         print("Stopping the service", service, "...")
         try:
-            rc = run(["systemctl", "stop", service], check=False, timeout=60).returncode
+            # Use disable --now to prevent Restart=always from restarting
+            rc = run(["systemctl", "disable", "--now", service], check=False, timeout=60).returncode
             if rc == 0:
-                print("Stopped service", service)
+                print("Stopped and disabled service", service)
             else:
                 rc = run(
-                    ["/usr/sbin/service", service, "stop"], check=False, timeout=60
+                    ["systemctl", "stop", service], check=False, timeout=60
                 ).returncode
                 if rc == 0:
-                    print("Stopped service", service, "with service command")
+                    print("Stopped service", service, "(without disable)")
                 else:
                     print("Error stopping service", service, "Return code", rc)
         except Exception as e:
@@ -374,15 +375,16 @@ def start_services(services, hook):
     for service in services:
         print("Starting the service", service, "...")
         try:
-            rc = run(["systemctl", "start", service], check=False, timeout=60).returncode
+            # Use enable --now to re-enable and start (counterpart of disable --now)
+            rc = run(["systemctl", "enable", "--now", service], check=False, timeout=60).returncode
             if rc == 0:
-                print("Started service", service)
+                print("Enabled and started service", service)
             else:
                 rc = run(
-                    ["/usr/sbin/service", service, "start"], check=False, timeout=60
+                    ["systemctl", "start", service], check=False, timeout=60
                 ).returncode
                 if rc == 0:
-                    print("Started service", service, "with service command")
+                    print("Started service", service, "(without enable)")
                 else:
                     print("Error starting service", service, "Return code", rc)
         except Exception as e:
