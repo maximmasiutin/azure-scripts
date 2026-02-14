@@ -3,54 +3,135 @@
 # monitor-credits.py
 # Copyright 2026 by Maxim Masiutin. All rights reserved.
 
-# This script monitors Azure Burstable (B-series) VM CPU credits on the VM where
-# it is running. When banked credits fall below a low threshold (default 10), it
-# stops specified Linux services. When credits recover above a high threshold
-# (default 90% of the VM size maximum), it starts those services again.
-
-# Prerequisites - Managed Identity Setup:
+# Monitors Azure B-series (burstable) VM CPU credits and manages Linux services
+# based on credit level. Runs on the VM itself, polling Azure Monitor API via
+# IMDS (Instance Metadata Service) at a configurable interval.
 #
-# 1. Enable system-assigned managed identity on the VM:
+# When banked credits fall below a low threshold, the script stops specified
+# services. When credits recover above a high threshold (percentage of the VM
+# size maximum), it starts them again. Two separate thresholds provide hysteresis
+# to prevent rapid stop/start cycling when credits hover near a single boundary.
+#
+# Dependencies: python3, requests (pip install requests)
+#
+# --- How services are stopped and started ---
+#
+# Stop:  "systemctl disable --now <service>"
+#   - "disable" removes the service from boot targets (prevents auto-start)
+#   - "--now" also stops the running process (sends SIGTERM)
+#   - This combination is necessary for services with Restart=always, because
+#     a plain "systemctl stop" would allow systemd's restart logic to bring
+#     the service back after RestartSec elapses
+#   - Falls back to "systemctl stop" if disable fails
+#
+# Start: "systemctl enable --now <service>"
+#   - "enable" re-adds the service to boot targets
+#   - "--now" also starts the service immediately
+#   - Falls back to "systemctl start" if enable fails
+#
+# --- Hook mechanism ---
+#
+# An optional hook script (--hook) is called on state transitions:
+#   - Called with argument "low" BEFORE services are stopped
+#   - Called with argument "high" BEFORE services are started
+#   - Hook timeout: 300 seconds (5 minutes)
+#   - Non-zero exit code is logged but does not prevent service stop/start
+#
+# The hook runs before the systemctl commands, allowing graceful pre-stop
+# actions (e.g., creating a flag file so a worker finishes its current task
+# before being terminated by SIGTERM).
+#
+# Hook security constraints:
+#   - Must be a regular file (not symlink target to device/socket)
+#   - Must be executable (chmod +x)
+#   - Must reside in: /opt/, /usr/local/bin/, or /home/
+#   - Path must not contain: "..", ";", "&", "|", "$", "`", or other
+#     shell metacharacters
+#   - Executed as array (shell=False), preventing shell injection
+#
+# --- Authentication ---
+#
+# Two methods, tried in order:
+#
+# 1. Managed Identity (preferred):
+#    VM must have system-assigned managed identity with "Monitoring Reader"
+#    role scoped to the VM resource. Setup:
+#
 #      az vm identity assign --resource-group <RG> --name <VM>
 #
-# 2. Get the managed identity principal ID:
-#      az vm identity show --resource-group <RG> --name <VM> --query principalId -o tsv
+#      PRINCIPAL=$(az vm identity show -g <RG> -n <VM> --query principalId -o tsv)
 #
-# 3. Assign the "Monitoring Reader" role to the identity. On Windows with Git
-#    Bash, prefix with MSYS_NO_PATHCONV=1 to prevent path mangling:
 #      MSYS_NO_PATHCONV=1 az role assignment create \
-#        --assignee <PRINCIPAL_ID> \
+#        --assignee $PRINCIPAL \
 #        --role "Monitoring Reader" \
-#        --scope "/subscriptions/<SUB>/resourceGroups/<RG>/providers/Microsoft.Compute/virtualMachines/<VM>"
+#        --scope "/subscriptions/<SUB>/resourceGroups/<RG>/providers/\
+#    Microsoft.Compute/virtualMachines/<VM>"
 #
-# 4. Verify from within the VM:
+#    Verify from within the VM:
 #      curl -s -H "Metadata: true" \
-#        "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/" \
+#        "http://169.254.169.254/metadata/identity/oauth2/token?\
+#    api-version=2018-02-01&resource=https://management.azure.com/" \
 #        | python -m json.tool
-#    You should see an "access_token" field in the response.
 #
-# Alternative - Service Principal (if managed identity is not available):
-#   Set these environment variables before running the script:
-#     export AZURE_CLIENT_ID=<app-id>
-#     export AZURE_CLIENT_SECRET=<secret>
-#     export AZURE_TENANT_ID=<tenant-id>
-#   The service principal needs "Monitoring Reader" role on the VM resource.
-
-# Usage:
-# 1. Make the script executable: chmod +x monitor-credits.py
-# 2. Run the script:
-#    ./monitor-credits.py --stop-services <service1,service2> [options]
-# 3. The script will run indefinitely, checking credits at the configured interval.
-
-# Options:
-#   --stop-services    Comma-separated list of services to manage
-#   --hook             Path to executable to run on credit state changes
-#   --low-threshold    Credit level below which services are stopped (default: 10)
-#   --high-percent     Percentage of max credits above which services restart (default: 90)
+# 2. Service Principal (fallback):
+#    Set environment variables:
+#      export AZURE_CLIENT_ID=<app-id>
+#      export AZURE_CLIENT_SECRET=<secret>
+#      export AZURE_TENANT_ID=<tenant-id>
+#    Principal needs "Monitoring Reader" role on the VM resource.
+#
+# Access tokens are refreshed every ~50 minutes (they expire after ~60 min).
+#
+# --- Error handling ---
+#
+# After 10 consecutive failures (auth or metric query), the script exits
+# with code 1. When run as a systemd service with Restart=always, systemd
+# will restart it after RestartSec. On metric query failure, the access
+# token is discarded and re-acquired on the next iteration (handles token
+# expiry or revocation).
+#
+# --- VM size credit table ---
+#
+# Max banked credits are auto-detected from a built-in table covering Bv1,
+# Bsv2 (Intel), Basv2 (AMD), and Bpsv2 (ARM) series. For unlisted sizes,
+# use --max-credits to specify manually.
+#
+# --- Usage ---
+#
+# Standalone:
+#   ./monitor-credits.py --stop-services myservice --interval 60
+#
+# With hook for graceful shutdown:
+#   ./monitor-credits.py --stop-services myservice --hook /opt/my-hook.sh
+#
+# Multiple services:
+#   ./monitor-credits.py --stop-services svc1,svc2,svc3
+#
+# Custom thresholds (stop below 20 credits, restart above 80% of max):
+#   ./monitor-credits.py --stop-services myservice \
+#     --low-threshold 20 --high-percent 80
+#
+# Dry run (shows config without executing):
+#   ./monitor-credits.py --stop-services myservice --dry-run
+#
+# As a systemd service:
+#   [Service]
+#   Type=simple
+#   ExecStart=/usr/bin/python3 /path/to/monitor-credits.py \
+#     --stop-services myservice --interval 60 --hook /opt/my-hook.sh
+#   Restart=always
+#   RestartSec=30
+#
+# --- Options ---
+#
+#   --stop-services    Comma-separated list of services to manage (required)
+#   --hook             Path to hook script, called with "low" or "high"
+#   --low-threshold    Stop when credits fall below this (default: 10)
+#   --high-percent     Start when credits rise above this % of max (default: 90)
 #   --max-credits      Override auto-detected max credits for the VM size
-#   --interval         Seconds between checks (default: 60)
-#   --skip-azure-check Skip the Azure environment check
-#   --dry-run          Show what would be done without executing
+#   --interval         Seconds between checks (default: 60, minimum: 10)
+#   --skip-azure-check Skip kernel release check for "azure" string
+#   --dry-run          Print config and exit without monitoring
 
 import os
 import re
