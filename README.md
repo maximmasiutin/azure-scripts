@@ -28,7 +28,7 @@
 **Infrastructure Management**
 
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
-1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states. Useful for enabling new VM series (v7 Turin) that require feature flag registration.
+1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
 
