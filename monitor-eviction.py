@@ -5,8 +5,9 @@
 
 # This script monitors an Azure spot VM on which it is running to determine whether
 # the VM is being evicted. Upon detecting an eviction event, it optionally executes
-# a specified hook script and stops specified Linux services gracefully before the
-# VM instance is stopped.
+# a specified hook script and stops specified services gracefully before the
+# VM instance is stopped. Supports both Linux (systemctl/service) and Windows
+# (net stop / sc stop) service management.
 
 # The script uses the Azure Instance Metadata Service to check for scheduled events
 # and determines if the VM is being evicted. It can be run as a systemd service or in
@@ -22,9 +23,10 @@
 import os
 import re
 import shlex
+import sys
 from argparse import ArgumentParser
 from os import path, access, X_OK
-from platform import uname, node
+from platform import uname, node, system
 from subprocess import run
 from sys import stderr, exit
 from time import sleep
@@ -96,8 +98,11 @@ def validate_hook_path(hook_path):
     if not path.isfile(real_path):
         raise ValueError(f"Hook path is not a regular file: {real_path}")
 
-    # Allow hooks in safe directories
-    allowed_dirs = ["/opt/", "/usr/local/bin/", "/home/"]
+    # Allow hooks in safe directories (platform-dependent)
+    if system().lower() == "windows":
+        allowed_dirs = ["C:\\Program Files\\", "C:\\Scripts\\", "D:\\Scripts\\"]
+    else:
+        allowed_dirs = ["/opt/", "/usr/local/bin/", "/home/"]
     if not any(real_path.startswith(safe_dir) for safe_dir in allowed_dirs):
         raise ValueError(
             f"Hook script must be in allowed directories {allowed_dirs}: {real_path}"
@@ -126,22 +131,44 @@ def eviction_action(a_services, a_hook):
         except Exception as e:
             print(f"Hook execution error: {e}")
 
+    is_windows = system().lower() == "windows"
+
     for service in a_services:
         print("Stopping the service", service, "...")
         try:
-            # Try systemctl first (modern systems)
-            rc = run(["systemctl", "stop", service], check=False, timeout=60).returncode
-            if rc == 0:
-                print("Stopped service", service, "with systemctl")
-            else:
-                # Fallback to service command
+            if is_windows:
+                # Try "net stop" first, then "sc stop" as fallback
                 rc = run(
-                    ["/usr/sbin/service", service, "stop"], check=False, timeout=60
+                    ["net", "stop", service], check=False, timeout=60
                 ).returncode
                 if rc == 0:
-                    print("Stopped service", service, "with service command")
+                    print("Stopped service", service, "with net stop")
                 else:
-                    print("Error stopping service", service, "Return code", rc)
+                    rc = run(
+                        ["sc", "stop", service], check=False, timeout=60
+                    ).returncode
+                    if rc == 0:
+                        print("Stopped service", service, "with sc stop")
+                    else:
+                        print("Error stopping service", service, "Return code", rc)
+            else:
+                # Try systemctl first (modern systems)
+                rc = run(
+                    ["systemctl", "stop", service], check=False, timeout=60
+                ).returncode
+                if rc == 0:
+                    print("Stopped service", service, "with systemctl")
+                else:
+                    # Fallback to service command
+                    rc = run(
+                        ["/usr/sbin/service", service, "stop"],
+                        check=False,
+                        timeout=60,
+                    ).returncode
+                    if rc == 0:
+                        print("Stopped service", service, "with service command")
+                    else:
+                        print("Error stopping service", service, "Return code", rc)
         except Exception as e:
             print(f"Error stopping service {service}: {e}")
 
@@ -204,13 +231,38 @@ if __name__ == "__main__":
     services, hook, skip_azure_check, dry_run = parse_args()
 
     if not skip_azure_check:
-        s = uname().release
-        if "azure" not in s.lower():
-            print(
-                f'The release "{s}" does not indicate Azure! (use --skip-azure-check to avoid this check)',
-                file=stderr,
-            )
-            exit(1)
+        if system().lower() == "windows":
+            # On Windows, check Azure by querying IMDS identity endpoint
+            try:
+                resp = get(
+                    "http://169.254.169.254/metadata/instance",
+                    headers=headerValue,
+                    params={"api-version": "2021-02-01"},
+                    timeout=5,
+                )
+                if resp.status_code != 200:
+                    print(
+                        "Azure IMDS not reachable - not running on Azure? "
+                        "(use --skip-azure-check to skip)",
+                        file=stderr,
+                    )
+                    exit(1)
+            except Exception:
+                print(
+                    "Azure IMDS not reachable - not running on Azure? "
+                    "(use --skip-azure-check to skip)",
+                    file=stderr,
+                )
+                exit(1)
+        else:
+            s = uname().release
+            if "azure" not in s.lower():
+                print(
+                    f'The release "{s}" does not indicate Azure! '
+                    "(use --skip-azure-check to avoid this check)",
+                    file=stderr,
+                )
+                exit(1)
 
     myComputer = node()
 
