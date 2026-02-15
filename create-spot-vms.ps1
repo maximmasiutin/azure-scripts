@@ -1,8 +1,11 @@
 # create-spot-vms.ps1
-# Creates Azure Spot VMs with full ARM64 and latest Ubuntu support
+# Creates Azure Spot VMs with any Linux image (Ubuntu by default)
 # Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 #
 # Features:
+#   - Any Linux image: Specify -ImagePublisher, -ImageOffer, -ImageSku for any Linux distro
+#     (e.g., Debian, RHEL, CentOS, SUSE, Alma, Rocky, Oracle Linux, Flatcar, etc.)
+#   - Default: Ubuntu - auto-discovers latest Ubuntu minimal from Canonical via Azure API
 #   - Full ARM64 support: ARM VMs (D*p*_v5, D*p*_v6) auto-detected
 #   - Dynamic Ubuntu discovery: Queries Azure API for newest available Ubuntu (no hardcoded versions)
 #   - Architecture detection: Automatically uses ARM64 or x64 image based on VM size
@@ -74,9 +77,20 @@
 #     Use -BlockSSH to create NSG without SSH rule.
 #     Use -NoNSG to skip NSG creation entirely.
 #
-# Basic Examples:
+# Basic Examples (Ubuntu, default):
 #   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName myvm
 #   pwsh create-spot-vms.ps1 -Location centralindia -VMSize Standard_D64pls_v6 -VMName arm-vm
+#
+# Non-Ubuntu Linux Examples:
+#   # Debian 12
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName deb-vm `
+#     -ImagePublisher Debian -ImageOffer debian-12 -ImageSku 12-gen2
+#   # AlmaLinux 9
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName alma-vm `
+#     -ImagePublisher almalinux -ImageOffer almalinux-x86_64 -ImageSku 9-gen2
+#   # SUSE Enterprise 15
+#   pwsh create-spot-vms.ps1 -Location eastus -VMSize Standard_D4as_v5 -VMName suse-vm `
+#     -ImagePublisher SUSE -ImageOffer sles-15-sp6 -ImageSku gen2
 #
 # SSH Key Examples:
 #   # Via command line
@@ -118,10 +132,10 @@ param(
     [switch]$NoPublicIP,
     [switch]$UseNatGateway,
 
-    # Image - auto-detected based on CPU type if not specified
-    [string]$ImagePublisher = "Canonical",
-    [string]$ImageOffer,  # Auto-detected if not specified
-    [string]$ImageSku,    # Auto-detected if not specified
+    # Image - defaults to Ubuntu; set all three for any Linux distro (Debian, RHEL, Alma, SUSE, etc.)
+    [string]$ImagePublisher = "Canonical",  # e.g., "Debian", "almalinux", "SUSE", "RedHat"
+    [string]$ImageOffer,  # Auto-detected for Ubuntu if not specified; e.g., "debian-12", "RHEL"
+    [string]$ImageSku,    # Auto-detected for Ubuntu if not specified; e.g., "12-gen2", "9_4-gen2"
     [string]$ImageVersion = "latest",
     [string]$StorageAccountType = "Standard_LRS",
     [int]$OSDiskSizeGB = 32,  # Azure tier S4 (32 GiB) - same price as 30 GiB
