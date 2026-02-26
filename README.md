@@ -1,24 +1,35 @@
 # Introduction - Useful Scripts for Microsoft Azure
 
-1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops a Linux service before the VM instance is stopped.
+**Cost Optimization**
+
 1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, CPU vendor filtering (Intel/AMD/ARM), and Windows VMs. Examples of use:
   `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (~1 page)
   `python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5" --return-region` (~4 pages)
   `python vm-spot-price.py --cpu 64 --no-burstable --region eastus` (~4 pages)
   `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region` (~130 pages)
   `python vm-spot-price.py --all-vm-series --cpu 64` (~140 pages)
-  `python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"` (~1 page, Windows)  
-1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:  
-  `python blob-storage-price.py`  
-  `python blob-storage-price.py --blob-types "General Block Blob v2"`  
-  `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`  
+  `python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"` (~1 page, Windows)
+1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:
+  `python blob-storage-price.py`
+  `python blob-storage-price.py --blob-types "General Block Blob v2"`
+  `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`
 
-1. **create-spot-vms.ps1**: Creates Azure Spot VMs with full ARM64 support. Dynamically discovers latest Ubuntu minimal from Canonical via Azure API. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
-1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
-1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
-1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states. Useful for enabling new VM series (v7 Turin) that require feature flag registration.
+**Monitoring**
+
+1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops services (Linux or Windows) before the VM instance is stopped. Supports custom hook scripts for pre-eviction actions.
+1. **monitor-credits.py**: Monitors Azure B-series (burstable) VM CPU credits and manages services based on credit level. Stops services when credits fall below a low threshold, restarts them when credits recover above a high threshold. Uses hysteresis to prevent rapid stop/start cycling.
 1. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md).
-1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart server in case of Azure removed the disk if machine was stopped.  
+
+**VM Provisioning**
+
+1. **create-spot-vms.ps1**: Creates Azure Spot VMs with any Linux image (Ubuntu by default). Supports full ARM64, dynamic Ubuntu image discovery, NAT Gateway, and custom images via `-ImagePublisher`/`-ImageOffer`/`-ImageSku` for any Linux distro. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
+1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
+
+**Infrastructure Management**
+
+1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
+1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
+1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
 
 # Details 
@@ -130,15 +141,30 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 3. **monitor-eviction.py**: Graceful handling of Azure spot VM evictions
    - Key Features: Real-time eviction detection via Azure Metadata Service, configurable service shutdown
+   - Platform Support: Linux (systemctl/service) and Windows (net stop/sc stop) service management
    - Safety Features: Service validation, custom hook execution, Azure environment detection
    - Integration: Works as systemd service or container, supports custom shutdown scripts
    - Critical Use Case: Prevents data loss during spot VM evictions by gracefully stopping services
    - Usage:
      ```bash
+     # Linux
      ./monitor-eviction.py --stop-services nginx,postgresql --hook /path/to/backup-script.sh
+     # Windows
+     python monitor-eviction.py --stop-services MyService,AnotherService --skip-azure-check
      ```
 
-4. **monitor-stddev.py**: Comprehensive website health monitoring with statistical analysis
+4. **monitor-credits.py**: Azure B-series CPU credit monitoring with automatic service management
+   - Key Features: Polls Azure Monitor API via IMDS for CPU credit metrics
+   - Hysteresis: Separate low/high thresholds prevent rapid stop/start cycling
+   - Service Management: Stops services when credits are low, restarts when recovered
+   - Authentication: Managed Identity (preferred) or Service Principal
+   - Hook Support: Optional hook script called with "low" or "high" argument on state transitions
+   - Usage:
+     ```bash
+     ./monitor-credits.py --stop-services myworker --low-threshold 10 --high-threshold-pct 50
+     ```
+
+6. **monitor-stddev.py**: Comprehensive website health monitoring with statistical analysis
    - Advanced Metrics: Latency standard deviation, error rate tracking, health status determination
    - Storage Options: Local files, Azure Blob Storage, Azure Cosmos DB Table API
    - Visualization: Automatic HTML reports, PNG history graphs, real-time status pages
@@ -148,7 +174,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 ### Infrastructure Management Scripts
 
-5. **create-192core-vm.ps1**: High-core-count spot VM deployment
+7. **create-192core-vm.ps1**: High-core-count spot VM deployment
    - Purpose: Creates a 192-core Azure Spot VM with automatic region and VM size selection
    - Pre-flight Quota Check: Checks spot quota in 40 regions before querying prices
    - Auto-detection: Finds cheapest 192-core VM across regions with available quota
@@ -156,11 +182,12 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Progress Display: Shows progress while querying Azure Retail Prices API (~130 pages)
    - Usage: `pwsh ./create-192core-vm.ps1 [-VMName "name"] [-WhatIf]`
 
-6. **create-spot-vms.ps1**: Automated spot VM deployment with ARM64 support
+8. **create-spot-vms.ps1**: Automated spot VM deployment with any Linux image
    - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
      - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
      - Competitive spot pricing for ARM VMs in many regions
-   - **Dynamic Ubuntu Image Discovery**: Queries Canonical offers via Azure API (no hardcoded version list)
+   - **Any Linux Image**: Supports any Linux distro via `-ImagePublisher`, `-ImageOffer`, `-ImageSku` parameters (e.g., Debian, RHEL, AlmaLinux, SUSE, Rocky, Oracle Linux)
+   - **Default: Ubuntu** with dynamic image discovery via Canonical Azure API (no hardcoded version list)
      - Default: Latest non-LTS Ubuntu minimal - smaller, faster boot
      - Minimal images preferred over full server images
      - Use `-UseLTS` to prefer LTS versions for production workloads
@@ -180,7 +207,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
    - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
-7. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
+9. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
@@ -196,7 +223,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html"
      ```
 
-8. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+10. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
    - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
    - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
    - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
@@ -293,6 +320,10 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName
 
 # Prefer full server image over minimal
 pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "myvm" -PreferServer
+
+# Any Linux distro: specify ImagePublisher, ImageOffer, ImageSku
+pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName "deb-vm" `
+    -ImagePublisher "Debian" -ImageOffer "debian-12" -ImageSku "12-gen2"
 ```
 
 ## Advanced Features
