@@ -694,7 +694,12 @@ pwsh manage-compute-features.ps1 -Action Restore -InputFile "before-testing.json
 
 This repository uses Trivy and CodeQL security scanning. See [SECURITY.md](SECURITY.md) for details.
 
-## License 
+## See Also
+
+- [AWS Spot Instance Finder](https://github.com/maximmasiutin/aws-spot-instance-finder) - Find cheapest AWS EC2 spot instances across all regions (filter by vCPUs, RAM, instance type, region)
+- [GCP Spot VM Price Finder](https://github.com/maximmasiutin/gcp-spot-price) - Find cheapest Google Cloud spot instances across all regions (per-vCPU and per-GB pricing by machine family)
+
+## License
 
 Copyright 2023-2026 by Maxim Masiutin. All rights reserved.
 
