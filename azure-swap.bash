@@ -86,7 +86,7 @@ readonly SWAP_SCRIPT="/usr/local/bin/configure-swap.sh"   # generated swap confi
 readonly SWAP_LABEL="Temporary Storage"                   # Azure temporary disk label to search for
 readonly SWAP_MOUNT="/mnt/temporary_storage"              # mount point for temporary storage
 readonly FALLBACK_SWAPFILE="/mnt/swapfile"                # fallback swap file if no temp storage
-readonly SWAPPINESS="10"                                  # low swappiness for better performance
+readonly SWAPPINESS="160"                                  # high swappiness for Fishtest workers
 readonly RESUME_CONF="/etc/initramfs-tools/conf.d/resume" # hibernation resume configuration
 readonly FSTAB="/etc/fstab"                              # filesystem table for persistent mounts
 readonly SYSCTL_CONF="/etc/sysctl.conf"                  # kernel parameter configuration
@@ -95,8 +95,8 @@ readonly SERVICE_PERM="644"                              # standard permissions 
 readonly SCRIPT_PERM="755"                               # executable permissions for scripts
 
 # Validate swappiness value
-if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || [[ "$SWAPPINESS" -lt 0 ]] || [[ "$SWAPPINESS" -gt 100 ]]; then
-    log_fatal "Invalid swappiness value: $SWAPPINESS (must be 0-100)"
+if ! [[ "$SWAPPINESS" =~ ^[0-9]+$ ]] || [[ "$SWAPPINESS" -lt 0 ]] || [[ "$SWAPPINESS" -gt 200 ]]; then
+    log_fatal "Invalid swappiness value: $SWAPPINESS (must be 0-200)"
 fi
 
 # ==== MAIN SCRIPT EXECUTION ====
@@ -283,22 +283,34 @@ configure_resume() {
     fi
 }
 
-# Set system swappiness
+# Set system swappiness and fast I/O settings
 set_swappiness() {
-    log "Configuring swappiness to $SWAPPINESS"
-    
+    log "Configuring swappiness to $SWAPPINESS and fast I/O settings"
+
+    # Fast I/O sysctl: maximize write buffering in RAM (Fishtest data is expendable)
+    cat > /etc/sysctl.d/12-fast-io.conf << 'SYSCTL_EOF'
+# Fast I/O: maximize write buffering in RAM
+vm.dirty_ratio=80
+vm.dirty_background_ratio=50
+vm.dirty_expire_centisecs=30000
+vm.dirty_writeback_centisecs=1500
+SYSCTL_EOF
+
     # Apply current setting
     sysctl -w "vm.swappiness=$SWAPPINESS" >/dev/null || fail "Failed to set swappiness"
-    
+
     # Create backup of sysctl.conf
     [[ -f "$SYSCTL_CONF" ]] && cp "$SYSCTL_CONF" "${SYSCTL_CONF}.backup.$(date +%s)"
-    
+
     # Update persistent setting
     if grep -q '^vm.swappiness' "$SYSCTL_CONF" 2>/dev/null; then
         sed -i "s/^vm\.swappiness.*/vm.swappiness = $SWAPPINESS/" "$SYSCTL_CONF"
     else
         echo "vm.swappiness = $SWAPPINESS" >> "$SYSCTL_CONF"
     fi
+
+    # Apply all sysctl settings
+    sysctl --system > /dev/null 2>&1 || log "Warning: sysctl --system had warnings"
 }
 
 # Update initramfs safely
