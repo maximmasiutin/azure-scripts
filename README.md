@@ -29,6 +29,7 @@
 
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
+1. **find-phantom-resource.ps1**: Finds hidden/phantom resources blocking resource group deletion. Uses the ARM REST API directly, which bypasses the case-sensitive JMESPath filtering that causes `az network * list` to miss resources. Also checks NICs, subnets, private endpoints, DNS zones, NSGs, load balancers, route tables, managedBy resources, and failed deployments. Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"`
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
 
@@ -207,7 +208,23 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
    - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
-9. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
+9. **find-phantom-resource.ps1**: Find hidden/phantom resources blocking resource group deletion
+   - Problem: Azure Portal shows resources (Public IPs, VNets) in a resource group, but `az resource list`, `az network public-ip list`, and `az network vnet list` all return empty. The resource group cannot be deleted.
+   - Root Cause: `az network * list --query "[?resourceGroup=='X']"` uses JMESPath client-side filtering, which is case-sensitive. Azure stores resource group names with inconsistent casing internally (e.g., "FishtestSpotRG-9" in the portal vs "FISHTESTSPOTRG-9" in the backend). When casing differs, JMESPath silently returns zero results.
+   - Solution: The script uses `az rest --method GET` to query the ARM REST API directly by resource group path. This bypasses JMESPath entirely and always returns all resources regardless of internal casing.
+   - Also checks: NICs, subnets, private endpoints, private DNS zones, load balancers, route tables, NSGs, managedBy orphans, and failed deployments.
+   - Common with Spot VMs where eviction or failed provisioning leaves orphaned network resources.
+   - Usage:
+     ```powershell
+     # Find phantom resources
+     pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-9"
+
+     # Delete found resources by ID, then delete the resource group
+     az resource delete --ids "/subscriptions/.../providers/Microsoft.Network/publicIPAddresses/my-pip"
+     az group delete -n "FishtestSpotRG-9" --yes
+     ```
+
+1. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
