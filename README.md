@@ -661,27 +661,27 @@ pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -ListO
 
 **2. manage-compute-features.ps1** (Azure CLI, simpler, with backup/restore)
 
-Location: `C:\q\linux-fishtest-scripts\manage-compute-features.ps1`
+Location: `%MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1`
 
 ```powershell
 # List all Microsoft.Compute features with summary
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action List
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action List
 
 # Save current state to JSON (for backup before changes)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save
 # Creates: compute-features-20260111-143022.json
 
 # Save to specific file
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save -OutputFile "my-backup.json"
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save -OutputFile "my-backup.json"
 
 # Enable all features except problematic ones (default excludes AutomaticZoneRebalancing)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll
 
 # Enable all except multiple features
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll -ExcludeFeatures @("AutomaticZoneRebalancing", "SomeOther")
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll -ExcludeFeatures @("AutomaticZoneRebalancing", "SomeOther")
 
 # Restore features to saved state (register/unregister as needed)
-pwsh C:\q\linux-fishtest-scripts\manage-compute-features.ps1 -Action Restore -InputFile "my-backup.json"
+pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Restore -InputFile "my-backup.json"
 ```
 
 **Workflow for Safe Feature Testing:**
