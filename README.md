@@ -1,6 +1,6 @@
 # Introduction - Useful Scripts for Microsoft Azure
 
-**Cost Optimization**
+## Cost Optimization
 
 1. **vm-spot-price.py**: Returns a sorted list (by VM instance spot price) of Azure regions to find cheapest spot instance price. Supports multi-VM comparison, per-core pricing analysis, CPU vendor filtering (Intel/AMD/ARM), and Windows VMs. Examples of use:
   `python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"` (~1 page)
@@ -14,28 +14,30 @@
   `python blob-storage-price.py --blob-types "General Block Blob v2"`
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`
 
-**Monitoring**
+## Monitoring
 
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops services (Linux or Windows) before the VM instance is stopped. Supports custom hook scripts for pre-eviction actions.
 1. **monitor-credits.py**: Monitors Azure B-series (burstable) VM CPU credits and manages services based on credit level. Stops services when credits fall below a low threshold, restarts them when credits recover above a high threshold. Uses hysteresis to prevent rapid stop/start cycling.
 1. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md).
 
-**VM Provisioning**
+## VM Provisioning
 
 1. **create-spot-vms.ps1**: Creates Azure Spot VMs with any Linux image (Ubuntu by default). Supports full ARM64, dynamic Ubuntu image discovery, NAT Gateway, and custom images via `-ImagePublisher`/`-ImageOffer`/`-ImageSku` for any Linux distro. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
 1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
 
-**Infrastructure Management**
+## Infrastructure Management
 
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
 1. **find-phantom-resource.ps1**: Finds hidden/phantom resources blocking resource group deletion. Uses the ARM REST API directly, which bypasses the case-sensitive JMESPath filtering that causes `az network * list` to miss resources. Also checks NICs, subnets, private endpoints, DNS zones, NSGs, load balancers, route tables, managedBy resources, and failed deployments. Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"`
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
+## Details
 
-# Details 
 A collection of Python and PowerShell utilities for Azure cost optimization, monitoring, and automation.
+
 ## Core Utilities
+
 ### Cost Optimization Scripts
 
 1. **vm-spot-price.py**: Find the cheapest Azure regions for spot VM instances
@@ -61,6 +63,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      - All-VM mode (`--all-vm-series`): ~5 pages/region, ~140 pages all regions
      - Use `--region` to reduce pages from ~130-140 to ~4-5
    - Examples:
+
      ```bash
      # Single SKU pattern (1 page)
      python vm-spot-price.py --cpu 4 --sku-pattern "B#s_v2"
@@ -132,6 +135,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Storage Types Supported: Standard Page Blob, General Block Blob, Premium Block Blob, and more
    - Output: Sorted pricing table with average costs per region
    - Examples:
+
      ```bash
      python blob-storage-price.py
      python blob-storage-price.py --blob-types "General Block Blob v2"
@@ -140,13 +144,14 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 ### Monitoring and Reliability Scripts
 
-3. **monitor-eviction.py**: Graceful handling of Azure spot VM evictions
+1. **monitor-eviction.py**: Graceful handling of Azure spot VM evictions
    - Key Features: Real-time eviction detection via Azure Metadata Service, configurable service shutdown
    - Platform Support: Linux (systemctl/service) and Windows (net stop/sc stop) service management
    - Safety Features: Service validation, custom hook execution, Azure environment detection
    - Integration: Works as systemd service or container, supports custom shutdown scripts
    - Critical Use Case: Prevents data loss during spot VM evictions by gracefully stopping services
    - Usage:
+
      ```bash
      # Linux
      ./monitor-eviction.py --stop-services nginx,postgresql --hook /path/to/backup-script.sh
@@ -154,18 +159,19 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      python monitor-eviction.py --stop-services MyService,AnotherService --skip-azure-check
      ```
 
-4. **monitor-credits.py**: Azure B-series CPU credit monitoring with automatic service management
+2. **monitor-credits.py**: Azure B-series CPU credit monitoring with automatic service management
    - Key Features: Polls Azure Monitor API via IMDS for CPU credit metrics
    - Hysteresis: Separate low/high thresholds prevent rapid stop/start cycling
    - Service Management: Stops services when credits are low, restarts when recovered
    - Authentication: Managed Identity (preferred) or Service Principal
    - Hook Support: Optional hook script called with "low" or "high" argument on state transitions
    - Usage:
+
      ```bash
      ./monitor-credits.py --stop-services myworker --low-threshold 10 --high-threshold-pct 50
      ```
 
-6. **monitor-stddev.py**: Comprehensive website health monitoring with statistical analysis
+3. **monitor-stddev.py**: Comprehensive website health monitoring with statistical analysis
    - Advanced Metrics: Latency standard deviation, error rate tracking, health status determination
    - Storage Options: Local files, Azure Blob Storage, Azure Cosmos DB Table API
    - Visualization: Automatic HTML reports, PNG history graphs, real-time status pages
@@ -175,7 +181,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 ### Infrastructure Management Scripts
 
-7. **create-192core-vm.ps1**: High-core-count spot VM deployment
+1. **create-192core-vm.ps1**: High-core-count spot VM deployment
    - Purpose: Creates a 192-core Azure Spot VM with automatic region and VM size selection
    - Pre-flight Quota Check: Checks spot quota in 40 regions before querying prices
    - Auto-detection: Finds cheapest 192-core VM across regions with available quota
@@ -183,7 +189,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - Progress Display: Shows progress while querying Azure Retail Prices API (~130 pages)
    - Usage: `pwsh ./create-192core-vm.ps1 [-VMName "name"] [-WhatIf]`
 
-8. **create-spot-vms.ps1**: Automated spot VM deployment with any Linux image
+2. **create-spot-vms.ps1**: Automated spot VM deployment with any Linux image
    - **Full ARM64 Support**: Native support for ARM-based Azure VMs (Cobalt 100, Ampere Altra)
      - ARM VMs (D*p*_v5, D*p*_v6) automatically detected and use ARM64 Ubuntu images
      - Competitive spot pricing for ARM VMs in many regions
@@ -208,13 +214,14 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
    - **Force Overwrite**: Use `-ForceOverwrite` switch to suppress interactive prompts when overwriting existing resources (useful for automation).
    - **Infrastructure-Only Mode**: Use `-CreateInfrastructureOnly` with `-UseNatGateway` to create only shared infrastructure (RG, VNet, NAT Gateway) without VMs. Returns JSON with resource details. Useful for multi-worker orchestration where infrastructure should be created once before spawning parallel workers.
 
-9. **find-phantom-resource.ps1**: Find hidden/phantom resources blocking resource group deletion
+3. **find-phantom-resource.ps1**: Find hidden/phantom resources blocking resource group deletion
    - Problem: Azure Portal shows resources (Public IPs, VNets) in a resource group, but `az resource list`, `az network public-ip list`, and `az network vnet list` all return empty. The resource group cannot be deleted.
    - Root Cause: `az network * list --query "[?resourceGroup=='X']"` uses JMESPath client-side filtering, which is case-sensitive. Azure stores resource group names with inconsistent casing internally (e.g., "FishtestSpotRG-9" in the portal vs "FISHTESTSPOTRG-9" in the backend). When casing differs, JMESPath silently returns zero results.
    - Solution: The script uses `az rest --method GET` to query the ARM REST API directly by resource group path. This bypasses JMESPath entirely and always returns all resources regardless of internal casing.
    - Also checks: NICs, subnets, private endpoints, private DNS zones, load balancers, route tables, NSGs, managedBy orphans, and failed deployments.
    - Common with Spot VMs where eviction or failed provisioning leaves orphaned network resources.
    - Usage:
+
      ```powershell
      # Find phantom resources
      pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-9"
@@ -224,11 +231,12 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      az group delete -n "FishtestSpotRG-9" --yes
      ```
 
-1. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
+4. **set-storage-account-content-headers.ps1**: Static website optimization and deployment
    - Purpose: Configure proper Content-Type and Cache-Control headers for Azure static websites
    - Upload Feature: Optionally upload local files to Azure Blob Storage with `-LocalFilePath` parameter
    - Performance: Improves website loading times and SEO through proper HTTP headers
    - Usage:
+
      ```powershell
      # Set headers on existing blobs
      pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -CacheControl "public, max-age=432000"
@@ -240,13 +248,15 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
      pwsh ./set-storage-account-content-headers.ps1 -BlobSasUrl "https://..." -LocalFilePath "C:\path\to\file.html"
      ```
 
-10. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
-   - Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
-   - Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
-   - Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
-   - Security: Comprehensive input validation, privilege checks, and secure file operations
-   - Benefits: Optimizes memory usage on VMs with local SSDs that reset on stop/start
-   - Usage:
+5. **azure-swap.bash**: Dynamic SWAP provisioning for Azure VMs with temporary storage
+
+- Key Features: Automatically detects Azure "Temporary Storage" partitions, uses 90% for swap files
+- Resilience: Handles ephemeral storage by recreating swap on each boot via systemd service
+- Fallback: Creates 2GB+ swap in /mnt if no temporary storage found
+- Security: Comprehensive input validation, privilege checks, and secure file operations
+- Benefits: Optimizes memory usage on VMs with local SSDs that reset on stop/start
+- Usage:
+
      ```bash
      sudo ./azure-swap.bash
      sudo systemctl status robust-swap-setup.service
@@ -255,20 +265,24 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 ## Prerequisites
 
 **Python Requirements:**
+
 - Python 3.6+
 - Required packages: `curl_cffi`, `tabulate`, `azure-storage-blob`, `azure-data-tables`, `Pillow`
 
 **PowerShell Requirements:**
+
 - PowerShell 7.5 or later (run scripts with `pwsh`)
 - Azure PowerShell module (Az)
 - Appropriate Azure subscription permissions
 
 **Bash Requirements:**
+
 - systemd-based Linux distribution (Ubuntu, RHEL, SUSE, etc.)
 - Root privileges for swap configuration
 - Standard utilities: `systemctl`, `blkid`, `mount`, `dd`, `mkswap`, `swapon`
 
 **Installation:**
+
 ```bash
 # Via pip (recommended)
 pip install curl_cffi tabulate azure-storage-blob azure-data-tables Pillow
@@ -279,29 +293,34 @@ Note: `curl_cffi` replaces `requests` for browser-like TLS fingerprinting (avoid
 ## Quick Start Examples
 
 **Find cheapest region for a specific VM (1 page):**
+
 ```bash
 python vm-spot-price.py --sku-pattern "B4ls_v2" --return-region
 ```
 
 **Find cheapest spot option across multiple VM sizes (1 page per VM):**
+
 ```bash
 python vm-spot-price.py --vm-sizes "D4pls_v5,D4ps_v5,F4s_v2,D4as_v5,D4s_v5" --return-region
 # Output: centralindia Standard_D4as_v5
 ```
 
 **Find cheapest spot price per core - fast with region filter (~4 pages):**
+
 ```bash
 python vm-spot-price.py --cpu 64 --no-burstable --region eastus --return-region
 # Output: eastus Standard_D64pls_v6 0.3849 1 Hour
 ```
 
 **Find cheapest spot price per core - all regions (~130 pages):**
+
 ```bash
 python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region
 # Output: newzealandnorth Standard_F32ams_v6 0.066343 1 Hour
 ```
 
 **Monitor website with Azure integration:**
+
 ```bash
 python monitor-stddev.py --url "https://example.com" \
   --azure-blob-storage-connection-string "your_connection_string" \
@@ -309,11 +328,13 @@ python monitor-stddev.py --url "https://example.com" \
 ```
 
 **Set up spot VM eviction monitoring:**
+
 ```bash
 ./monitor-eviction.py --stop-services "apache2,mysql" --hook "/opt/backup.sh"
 ```
 
 **Configure dynamic swap for Azure VMs:**
+
 ```bash
 sudo ./azure-swap.bash
 # Verify service is running
@@ -321,6 +342,7 @@ sudo systemctl status robust-swap-setup.service
 ```
 
 **Create Azure spot VMs (PowerShell 7.5+):**
+
 ```powershell
 # Run with pwsh (PowerShell 7.5+)
 # Default: auto-discovers latest Ubuntu minimal from Canonical (no hardcoded versions)
@@ -369,10 +391,12 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -VMSize "Standard_D4as_v5" -VMName
 3. Therefore, Spot VMs must use Standard SKU public IPs (separate ARM resources)
 
 The script creates public IPs with `deleteOption=Delete`, ensuring automatic cleanup when VMs are deleted or evicted. However, each public IP:
+
 - Costs ~$3.65/month
 - Counts against the StandardPublicIPAddresses quota (default: 20 per region)
 
 **Alternatives for Spot workloads:**
+
 - **NAT Gateway**: Shared outbound IP for all VMs (~$37/month total)
 - **No public IP**: Private network access via jumpbox or VPN
 
@@ -381,6 +405,7 @@ The script creates public IPs with `deleteOption=Delete`, ensuring automatic cle
 Azure has a default limit of **20 Standard Public IPs per region per subscription**. When this limit is reached, you may see "ResourceNotFound" errors during IP creation - this is actually a masked quota exhaustion error, not a missing resource.
 
 **Symptoms:**
+
 - `ResourceNotFound` errors when creating Public IPs
 - VM creation fails after VNet/Subnet succeed
 - `QuotaExceeded` or `OperationNotAllowed` errors
@@ -388,11 +413,13 @@ Azure has a default limit of **20 Standard Public IPs per region per subscriptio
 **Check IP quota manually:**
 
 PowerShell:
+
 ```powershell
 Get-AzNetworkUsage -Location "eastus" | Where-Object { $_.Name.Value -eq "StandardPublicIPAddresses" }
 ```
 
 Azure CLI:
+
 ```bash
 az network list-usages --location eastus --query "[?contains(name.value, 'StandardPublicIPAddresses')]"
 ```
@@ -405,6 +432,7 @@ az network list-usages --location eastus --query "[?contains(name.value, 'Standa
    - Cost: ~$33/month vs ~$77/month for 21 individual IPs
 
 3. **Clean orphaned IPs** - Unattached IPs consume quota:
+
    ```powershell
    # List orphaned IPs
    Get-AzPublicIpAddress -ResourceGroupName "MyRG" | Where-Object { $null -eq $_.IpConfiguration }
@@ -419,12 +447,14 @@ az network list-usages --location eastus --query "[?contains(name.value, 'Standa
 For deployments with many VMs, using NAT Gateway instead of individual Public IPs can significantly reduce costs.
 
 **What is NAT Gateway?**
+
 - Azure NAT Gateway provides outbound internet connectivity for VMs without individual public IPs
 - All VMs in the subnet share one public IP for outbound traffic
 - Inbound connections are not possible (no public IP on VMs) - use jumpbox or VPN for SSH
 
 **Architecture:**
-```
+
+```text
 Internet
     |
     v
@@ -442,12 +472,13 @@ Internet
 ```
 
 **Cost Comparison:**
-| VMs | Individual Public IPs | NAT Gateway | Savings |
-|-----|----------------------|-------------|---------|
-| 5 VMs | ~$18/month | ~$37/month | -$19 (NAT more expensive) |
-| 10 VMs | ~$37/month | ~$37/month | Break-even |
-| 20 VMs | ~$73/month | ~$37/month | +$36/month |
-| 50 VMs | ~$183/month | ~$37/month | +$146/month |
+
+| VMs    | Individual Public IPs | NAT Gateway | Savings                   |
+|--------|-----------------------|-------------|---------------------------|
+| 5 VMs  | ~$18/month            | ~$37/month  | -$19 (NAT more expensive) |
+| 10 VMs | ~$37/month            | ~$37/month  | Break-even                |
+| 20 VMs | ~$73/month            | ~$37/month  | +$36/month                |
+| 50 VMs | ~$183/month           | ~$37/month  | +$146/month               |
 
 NAT Gateway becomes cost-effective at 10+ VMs per region.
 
@@ -477,7 +508,8 @@ pwsh ./create-spot-vms.ps1 -Location "eastus" -ResourceGroupName "WorkersRG" `
 ```
 
 **What gets created:**
-```
+
+```text
 ResourceGroup (e.g., WorkersRG)
   |
   +-- MyNet (VNet: 10.0.0.0/16)
@@ -533,11 +565,13 @@ Remove-AzVirtualNetwork -ResourceGroupName "WorkersRG" -Name "MyNet" -Force
 **SSH Access Without Public IPs:**
 
 Option 1: Jumpbox VM
+
 ```powershell
 # Create jumpbox with public IP in same VNet
 pwsh ./create-spot-vms.ps1 -VMName "jumpbox" -VMSize "Standard_B1s" `
     -ResourceGroupName "WorkersRG" -Location "eastus"
 ```
+
 ```bash
 # SSH to jumpbox, then to workers
 ssh azureuser@<jumpbox-public-ip>
@@ -549,6 +583,7 @@ Option 2: Azure Bastion (managed service, ~$140/month)
 Option 3: VPN Gateway (for on-premises connectivity)
 
 **Limitations:**
+
 - NAT Gateway is region-specific; multi-region deployments need multiple NAT Gateways
 - No inbound connectivity - VMs cannot be reached from internet directly
 - Data processing charges: $0.045/GB for outbound traffic through NAT Gateway
@@ -558,11 +593,12 @@ Option 3: VPN Gateway (for on-premises connectivity)
 
 When VM creation fails partway through, Azure may leave orphaned OS disks that retain their security type setting (TrustedLaunch or Standard). If a subsequent VM creation attempts to use the same disk name with a different security type, you'll see:
 
-```
+```text
 PropertyChangeNotAllowed: Changing property 'securityProfile.securityType' is not allowed.
 ```
 
 **Common Scenarios:**
+
 - ARM VMs (D*p*_v5, D*p*_v6) require Standard security type, but a previous x64 VM attempt created a disk with TrustedLaunch
 - Switching between x64 and ARM VM sizes in the same resource group
 - Retry after TrustedLaunch failure leaves orphaned disk
@@ -570,11 +606,13 @@ PropertyChangeNotAllowed: Changing property 'securityProfile.securityType' is no
 **Automatic Handling (create-spot-vms.ps1):**
 
 The script handles this automatically in three ways:
+
 1. **Pre-creation cleanup**: Checks for and deletes orphaned OS disks before VM creation
 2. **Error detection + retry**: Detects the specific error, cleans up the disk, and retries
 3. **TrustedLaunch fallback**: When TrustedLaunch fails, cleans disk and retries with Standard
 
 **Manual Cleanup:**
+
 ```powershell
 # List orphaned OS disks
 Get-AzDisk -ResourceGroupName "MyRG" | Where-Object { $_.ManagedBy -eq $null }
@@ -587,6 +625,7 @@ Remove-AzResourceGroup -Name "MyRG" -Force
 ```
 
 **Security Type Rules:**
+
 - **ARM VMs** (D*p*_v5, D*p*_v6): Always use Standard (TrustedLaunch not supported)
 - **x64 VMs**: Default to TrustedLaunch, auto-fallback to Standard if unsupported
 - **-TrustedLaunchOnly switch**: Fail instead of falling back (for strict security requirements)
@@ -604,11 +643,13 @@ Some newer VM series (like AMD v7 Turin) require Azure feature flag registration
 5. Click **Register**
 
 **Registration Status:**
+
 - **Not registered** - Feature available but not enabled
 - **Pending** - Registration submitted, awaiting Microsoft approval
 - **Registered** - Feature is active and usable
 
 **Enable via Azure CLI:**
+
 ```bash
 # Register a feature flag
 az feature register --namespace Microsoft.Compute --name DALV7Series
@@ -621,12 +662,14 @@ az provider register -n Microsoft.Compute
 ```
 
 **Important Notes:**
+
 - Some features require Microsoft approval and cannot be self-registered
 - Features that don't support self-registration may not appear in the portal
 - For restricted previews, contact Microsoft support or wait for general availability
 - Use `preview-vm-exclusions.txt` with `--exclude-sku-patterns-file` to avoid preview VM sizes
 
 **Workaround - Exclude Preview VMs:**
+
 ```bash
 # Exclude v7 series (and other preview SKUs) from price queries (~130 pages all regions)
 python vm-spot-price.py --min-cores 4 --max-cores 64 --exclude-sku-patterns-file preview-vm-exclusions.txt
@@ -642,6 +685,7 @@ See [Microsoft Learn - Set up preview features](https://learn.microsoft.com/en-u
 Two scripts are available for managing Azure preview features:
 
 **1. register-preview-features.ps1** (Azure PowerShell, full-featured)
+
 ```powershell
 # List all preview features
 pwsh register-preview-features.ps1 -ListOnly
@@ -659,32 +703,8 @@ pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -Featu
 pwsh register-preview-features.ps1 -ProviderNamespace "Microsoft.Compute" -ListOnly -ExportPath "features.csv"
 ```
 
-**2. manage-compute-features.ps1** (Azure CLI, simpler, with backup/restore)
-
-Location: `%MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1`
-
-```powershell
-# List all Microsoft.Compute features with summary
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action List
-
-# Save current state to JSON (for backup before changes)
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save
-# Creates: compute-features-20260111-143022.json
-
-# Save to specific file
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Save -OutputFile "my-backup.json"
-
-# Enable all features except problematic ones (default excludes AutomaticZoneRebalancing)
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll
-
-# Enable all except multiple features
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action EnableAll -ExcludeFeatures @("AutomaticZoneRebalancing", "SomeOther")
-
-# Restore features to saved state (register/unregister as needed)
-pwsh %MAXIM_REPOS_DIR%\linux-fishtest-scripts\manage-compute-features.ps1 -Action Restore -InputFile "my-backup.json"
-```
-
 **Workflow for Safe Feature Testing:**
+
 ```powershell
 # 1. Save current state before experimenting
 pwsh manage-compute-features.ps1 -Action Save -OutputFile "before-testing.json"
@@ -699,13 +719,14 @@ pwsh manage-compute-features.ps1 -Action Restore -InputFile "before-testing.json
 ```
 
 **Key Differences:**
-| Feature | register-preview-features.ps1 | manage-compute-features.ps1 |
-|---------|------------------------------|----------------------------|
-| Backend | Azure PowerShell (Az module) | Azure CLI (az) |
-| Namespaces | All providers | Microsoft.Compute only |
-| State backup | CSV export | JSON backup/restore |
-| Bulk enable | Yes | Yes (with exclusions) |
-| Restore | No | Yes (diff-based restore) |
+
+| Feature      | register-preview-features.ps1 | manage-compute-features.ps1 |
+|--------------|-------------------------------|-----------------------------|
+| Backend      | Azure PowerShell (Az module)  | Azure CLI (az)              |
+| Namespaces   | All providers                 | Microsoft.Compute only      |
+| State backup | CSV export                    | JSON backup/restore         |
+| Bulk enable  | Yes                           | Yes (with exclusions)       |
+| Restore      | No                            | Yes (diff-based restore)    |
 
 ## Security
 
