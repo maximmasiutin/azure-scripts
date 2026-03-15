@@ -1,30 +1,50 @@
-# find-phantom-resource.ps1 - Find and list hidden/phantom resources in an Azure resource group
-#
-# Solves the common problem where Azure Portal shows resources (typically Public IPs
-# and VNets) blocking resource group deletion, but CLI list commands return empty.
-#
-# Root cause: "az network * list --query [?resourceGroup=='X']" uses JMESPath
-# client-side filtering, which is CASE-SENSITIVE on the resourceGroup field.
-# Azure stores resource group names with inconsistent casing internally (e.g.,
-# "FishtestSpotRG-9" vs "FISHTESTSPOTRG-9"). When the casing differs, JMESPath
-# silently returns zero results even though the resources exist.
-#
-# Similarly, "az resource list -g X" can miss resources in transitional states.
-#
-# The fix: "az rest --method GET" queries the ARM REST API directly using the
-# resource group path, not a JMESPath filter. This always returns all resources
-# regardless of internal casing.
-#
-# Usage:
-#   pwsh find-phantom-resource.ps1 -ResourceGroup "MyResourceGroup"
-#
-# After finding phantom resources, delete them by resource ID:
-#   az resource delete --ids "<resource-id>"
-# Then delete the resource group:
-#   az group delete -n "MyResourceGroup" --yes
+<#
+.SYNOPSIS
+    Find hidden/phantom resources blocking Azure resource group deletion.
+
+.DESCRIPTION
+    Scans an Azure resource group using multiple methods to find resources that
+    "az resource list" and "az network * list" miss due to case-sensitivity bugs.
+
+    Root cause: JMESPath client-side filtering in "az network * list --query
+    [?resourceGroup=='X']" is CASE-SENSITIVE. Azure stores resource group names
+    with inconsistent casing internally (e.g. "FishtestSpotRG-9" vs
+    "FISHTESTSPOTRG-9"). When casing differs, JMESPath silently returns zero
+    results even though the resources exist.
+
+    The fix: "az rest --method GET" queries the ARM REST API directly using the
+    resource group path, bypassing JMESPath. This always returns all resources
+    regardless of internal casing.
+
+    Checks performed:
+      1. ARM REST API direct query (most reliable, bypasses casing issues)
+      2. az resource list (may miss resources with casing mismatch)
+      3. NICs, Public IPs, VNets, Subnets, Private Endpoints, DNS Zones
+      4. Load Balancers, Route Tables, NSGs
+      5. Subscription-wide scan for resources with managedBy field
+      6. Failed deployments in the resource group
+
+.PARAMETER ResourceGroup
+    Name of the Azure resource group to scan.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10"
+
+    Scans FishtestSpotRG-10 for phantom resources and prints resource IDs.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"
+
+    After finding resources, delete them and the RG:
+      az resource delete --ids "<resource-id-from-output>"
+      az group delete -n "MyRG" --yes
+
+.NOTES
+    Requires: Azure CLI (az) authenticated and with an active subscription.
+#>
 
 param(
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$true, HelpMessage="Name of the Azure resource group to scan")]
     [string]$ResourceGroup
 )
 
