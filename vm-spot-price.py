@@ -390,9 +390,14 @@ PAGE_ESTIMATOR = PageEstimator()
 def extract_series_from_vm_size(vm_size: str) -> str:
     """Extract series name from VM size for API query.
 
+    WARNING: The casing produced here may NOT match Azure's productName casing.
+    For example, this returns "Fsv2" but Azure uses "FSv2" in productName.
+    Therefore, do NOT use this for productName filtering when --vm-sizes is used;
+    armSkuName already uniquely identifies the VM in that case.
+
     Examples:
         D4pls_v5 -> Dplsv5
-        F4s_v2 -> Fsv2
+        F4s_v2 -> Fsv2  (Azure productName uses "FSv2" - different casing!)
         D4as_v5 -> Dasv5
         B4ls_v2 -> Blsv2
     """
@@ -1767,21 +1772,24 @@ def main() -> None:
             )
             if not non_spot:
                 query += SPOT_FILTER_CLAUSE
-            if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
-                windows_suffix = " Windows" if DEFAULT_SEARCH_VMWINDOWS else ""
-                if not DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
-                    logging.error(
-                        "Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False"
-                    )
-                    sys.exit(1)
-                # Skip productName filter for ARM VMs - they have different naming in Azure API
-                # ARM VMs will be filtered client-side for Windows exclusion
-                if not is_arm_vm(sku) and not is_arm_vm(series):
-                    query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
-                else:
-                    logging.debug(
-                        f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)"
-                    )
+            # Do not add productName filter with --vm-sizes: the series name
+            # casing from extract_series_from_vm_size() may not match Azure's
+            # productName (e.g. "Fsv2" vs "FSv2"), causing zero results.
+            # armSkuName already uniquely identifies the VM size.
+            if not args.vm_sizes:
+                if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
+                    windows_suffix = " Windows" if DEFAULT_SEARCH_VMWINDOWS else ""
+                    if not DEFAULT_SEARCH_VMLINUX and not DEFAULT_SEARCH_VMWINDOWS:
+                        logging.error(
+                            "Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False"
+                        )
+                        sys.exit(1)
+                    if not is_arm_vm(sku) and not is_arm_vm(series):
+                        query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                    else:
+                        logging.debug(
+                            f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)"
+                        )
             print(f"SKU: {sku}, Series: {series}")
             print(f"Filter: {query}")
             print()
@@ -1831,24 +1839,29 @@ def main() -> None:
                     )
                     query += f" and ({region_filter})"
 
-            if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
-                windows_suffix = ""
-                if DEFAULT_SEARCH_VMWINDOWS:
-                    windows_suffix = " Windows"
-                else:
-                    if not DEFAULT_SEARCH_VMLINUX:
-                        logging.error(
-                            "Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False"
+            # Skip productName filter when using --vm-sizes: armSkuName already
+            # uniquely identifies the VM, and the series name casing may not match
+            # Azure's productName (e.g. Fsv2 vs FSv2). Windows/Linux filtering
+            # is handled client-side in build_pricing_table().
+            if not args.vm_sizes:
+                if not (DEFAULT_SEARCH_VMWINDOWS and DEFAULT_SEARCH_VMLINUX):
+                    windows_suffix = ""
+                    if DEFAULT_SEARCH_VMWINDOWS:
+                        windows_suffix = " Windows"
+                    else:
+                        if not DEFAULT_SEARCH_VMLINUX:
+                            logging.error(
+                                "Both SEARCH_VMWINDOWS and SEARCH_VMLINUX cannot be set to False"
+                            )
+                            sys.exit(1)
+                    # Skip productName filter for ARM VMs - they have different naming in Azure API
+                    # ARM VMs will be filtered client-side for Windows exclusion
+                    if not is_arm_vm(sku) and not is_arm_vm(series):
+                        query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
+                    else:
+                        logging.debug(
+                            f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)"
                         )
-                        sys.exit(1)
-                # Skip productName filter for ARM VMs - they have different naming in Azure API
-                # ARM VMs will be filtered client-side for Windows exclusion
-                if not is_arm_vm(sku) and not is_arm_vm(series):
-                    query += f" and productName eq 'Virtual Machines {series} Series{windows_suffix}'"
-                else:
-                    logging.debug(
-                        f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)"
-                    )
 
             logging.debug(f"Query: {query}")
 
