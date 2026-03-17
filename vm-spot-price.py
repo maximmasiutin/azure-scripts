@@ -539,13 +539,37 @@ def should_skip_by_vendor(sku_name: str, args: Any) -> bool:
 # Comprehensive list of Azure VM series for per-core search
 # Based on official Azure documentation as of 2024-2025
 
-VM_SERIES_BURSTABLE = ["Bsv2", "Blsv2", "Bpsv2", "Bplsv2"]
+# Burstable B-series (all generations)
+VM_SERIES_BURSTABLE_V1 = [
+    "BS",  # B1s, B1ms, B1ls, B2s, B2ms (Intel, original gen)
+]
+VM_SERIES_BURSTABLE_V2_INTEL = [
+    "Bsv2",  # B2ts_v2 through B32s_v2 (Intel)
+    "Blsv2",  # B2ls_v2 through B32ls_v2 (Intel, low memory)
+]
+VM_SERIES_BURSTABLE_V2_AMD = [
+    "Basv2",  # B2ats_v2 through B32as_v2 (AMD)
+]
+VM_SERIES_BURSTABLE_V2_ARM = [
+    "Bpsv2",  # B2pts_v2 through B16ps_v2 (ARM)
+    "Bplsv2",  # B2pls_v2 through B16pls_v2 (ARM, low memory)
+]
+VM_SERIES_BURSTABLE = (
+    VM_SERIES_BURSTABLE_V1
+    + VM_SERIES_BURSTABLE_V2_INTEL
+    + VM_SERIES_BURSTABLE_V2_AMD
+    + VM_SERIES_BURSTABLE_V2_ARM
+)
 
 # =============================================================================
 # COMPUTE OPTIMIZED (F-family) - High CPU-to-memory ratio
 # =============================================================================
 
-# Intel Compute Optimized
+# Intel Compute Optimized (legacy + current)
+VM_SERIES_F_INTEL_LEGACY = [
+    "F",  # Intel Haswell/Broadwell (legacy, 1-16 vCPUs)
+    "FS",  # Intel Haswell/Broadwell with premium storage (legacy)
+]
 VM_SERIES_F_INTEL = [
     "Fsv2",  # Intel Xeon Platinum 8272CL (Cascade Lake), 72 vCPUs, 2 GiB/vCPU
 ]
@@ -570,11 +594,37 @@ VM_SERIES_F_AMD_V7 = [
 # FX Series - High frequency Intel (4.0 GHz)
 VM_SERIES_FX = [
     "FXmdsv2",  # Intel Xeon Gold 6246R, 48 vCPUs, 1152 GiB, EDA workloads
+    "FXmsv2",  # Intel Xeon Gold 6246R, 48 vCPUs, 1152 GiB (variant)
 ]
 
 # =============================================================================
 # GENERAL PURPOSE (D-family) - Balanced CPU-to-memory ratio
 # =============================================================================
+
+# Legacy D-series (Intel, older generations)
+VM_SERIES_D_LEGACY = [
+    "D",  # D1-D14 (Intel Xeon E5, original)
+    "DS",  # DS1-DS14 (premium storage)
+    "Dv2",  # Dv2 (Intel Xeon E5-2673, 2nd gen)
+    "DSv2",  # DSv2 (premium storage, 2nd gen)
+    "Dv3",  # Dv3 (Intel Xeon E5-2673 v4, 3rd gen)
+    "DSv3",  # DSv3 (premium storage, 3rd gen)
+    "Av2",  # A-series v2 (general purpose, Intel)
+]
+
+# Intel v4 (Xeon Platinum 8272CL Cascade Lake)
+VM_SERIES_D_INTEL_V4 = [
+    "Dv4",
+    "Dsv4",
+    "Ddv4",
+    "Ddsv4",  # 64 vCPUs, 256 GiB, with local disk
+]
+
+# AMD v4 (EPYC 7452 Rome)
+VM_SERIES_D_AMD_V4 = [
+    "Dav4",
+    "Dasv4",  # 64 vCPUs, 256 GiB
+]
 
 # Intel v5 (Xeon Platinum 8370C Ice Lake)
 VM_SERIES_D_INTEL_V5 = [
@@ -640,18 +690,33 @@ VM_SERIES_D_ARM_V6 = [
     "Dpldsv6",  # 96 vCPUs, 192 GiB (2:1)
 ]
 
+# NVIDIA-accelerated D-series (NVMe networking)
+VM_SERIES_D_NVIDIA_V6 = [
+    "Dnv6",  # Intel + NVIDIA networking
+    "Dndv6",  # Intel + NVIDIA networking + local disk
+    "Dnlv6",  # Intel + NVIDIA networking, low memory
+    "Dnldv6",  # Intel + NVIDIA networking, low memory + local disk
+]
+
 # =============================================================================
 # COMBINED LISTS
 # =============================================================================
 
-# All Compute Optimized
+# All Compute Optimized (including legacy)
 VM_SERIES_COMPUTE_OPTIMIZED = (
-    VM_SERIES_F_INTEL + VM_SERIES_F_AMD_V6 + VM_SERIES_F_AMD_V7 + VM_SERIES_FX
+    VM_SERIES_F_INTEL_LEGACY
+    + VM_SERIES_F_INTEL
+    + VM_SERIES_F_AMD_V6
+    + VM_SERIES_F_AMD_V7
+    + VM_SERIES_FX
 )
 
-# All General Purpose (current gen)
+# All General Purpose (all generations)
 VM_SERIES_GENERAL_PURPOSE = (
-    VM_SERIES_D_INTEL_V5
+    VM_SERIES_D_LEGACY
+    + VM_SERIES_D_INTEL_V4
+    + VM_SERIES_D_AMD_V4
+    + VM_SERIES_D_INTEL_V5
     + VM_SERIES_D_INTEL_V6
     + VM_SERIES_D_INTEL_V7
     + VM_SERIES_D_AMD_V5
@@ -659,6 +724,7 @@ VM_SERIES_GENERAL_PURPOSE = (
     + VM_SERIES_D_AMD_V7
     + VM_SERIES_D_ARM_V5
     + VM_SERIES_D_ARM_V6
+    + VM_SERIES_D_NVIDIA_V6
 )
 
 # General compute = D + F series (non-exotic)
@@ -667,6 +733,22 @@ VM_SERIES_GENERAL_COMPUTE = VM_SERIES_GENERAL_PURPOSE + VM_SERIES_COMPUTE_OPTIMI
 # =============================================================================
 # MEMORY OPTIMIZED (E-family) - High memory-to-CPU ratio
 # =============================================================================
+
+# Legacy E-series (Intel, older generations)
+VM_SERIES_E_LEGACY = [
+    "Ev3",  # Intel Xeon E5-2673 v4 (Broadwell)
+    "ESv3",  # Premium storage variant
+    "Ev4",
+    "Esv4",
+    "Edv4",
+    "Edsv4",  # Intel Xeon Platinum 8272CL (Cascade Lake)
+]
+
+# AMD v4 (EPYC 7452 Rome)
+VM_SERIES_E_AMD_V4 = [
+    "Eav4",
+    "Easv4",  # 64 vCPUs, 512 GiB
+]
 
 # Intel v5 (Xeon Platinum 8370C Ice Lake)
 VM_SERIES_E_INTEL_V5 = [
@@ -726,9 +808,17 @@ VM_SERIES_E_ARM_V6 = [
     "Epdsv6",  # 96 vCPUs, 384 GiB
 ]
 
-# All Memory Optimized
+# NVIDIA-accelerated E-series
+VM_SERIES_E_NVIDIA_V6 = [
+    "Env6",  # Intel + NVIDIA networking
+    "Endv6",  # Intel + NVIDIA networking + local disk
+]
+
+# All Memory Optimized (all generations)
 VM_SERIES_MEMORY_OPTIMIZED = (
-    VM_SERIES_E_INTEL_V5
+    VM_SERIES_E_LEGACY
+    + VM_SERIES_E_AMD_V4
+    + VM_SERIES_E_INTEL_V5
     + VM_SERIES_E_INTEL_V6
     + VM_SERIES_E_INTEL_V7
     + VM_SERIES_E_AMD_V5
@@ -736,10 +826,104 @@ VM_SERIES_MEMORY_OPTIMIZED = (
     + VM_SERIES_E_AMD_V7
     + VM_SERIES_E_ARM_V5
     + VM_SERIES_E_ARM_V6
+    + VM_SERIES_E_NVIDIA_V6
 )
 
 # All non-burstable series
 VM_SERIES_NON_BURSTABLE = VM_SERIES_GENERAL_COMPUTE + VM_SERIES_MEMORY_OPTIMIZED
+
+# =============================================================================
+# SPECIALTY SERIES (Storage, HPC, GPU, Confidential, Legacy)
+# =============================================================================
+
+# Legacy A-series and G-series
+VM_SERIES_LEGACY = [
+    "A",  # A0-A7 (Intel, basic tier)
+]
+
+# G-series (high memory, Intel Xeon E5 v3)
+VM_SERIES_G = [
+    "G",
+    "GS",  # Premium storage
+]
+
+# Storage optimized (L-family)
+VM_SERIES_STORAGE = [
+    "LS",  # Intel (legacy)
+    "LSv2",  # AMD EPYC 7551
+    "Lsv3",  # Intel Xeon Platinum 8370C
+    "Lsv4",  # AMD EPYC 9004 Genoa
+    "Lasv4",  # AMD variant
+    "Laosv4",  # AMD variant
+]
+
+# Memory optimized (M-family)
+VM_SERIES_M = [
+    "MS",
+    "MSv2",
+    "MdSv2",
+    "Mbsv3",
+    "Mbdsv3",
+]
+
+# HPC (H-family)
+VM_SERIES_HPC = [
+    "HCS",
+    "HXrs",
+    "HBrsv4",
+]
+
+# Confidential Computing (DC-family)
+VM_SERIES_DC = [
+    "DCsv3",
+    "DCdsv3",
+    "DCesv5",
+    "DCedsv5",
+    "DCasv6",
+    "DCadsv6",
+    "DCasccv5",
+    "DCadsccv5",
+    "ECasv6",
+    "ECadsv6",
+    "ECesv5",
+    "ECedsv5",
+    "ECasccv5",
+    "ECadsccv5",
+]
+
+# GPU (N-family)
+VM_SERIES_GPU = [
+    "NCSv3",
+    "NCasT4v3",
+    "NCadsH100v5",
+    "NCCadsv5",
+    "NVSv3",
+    "NVadsA10v5",
+    "NVasv4",
+    "NGadsV620v1",
+    "NDamsr A100v4",
+    "NDsH100v5",
+    "NDsfH100v5",
+    "NDsrH200v5",
+]
+
+# All specialty series combined
+VM_SERIES_SPECIALTY = (
+    VM_SERIES_LEGACY
+    + VM_SERIES_G
+    + VM_SERIES_STORAGE
+    + VM_SERIES_M
+    + VM_SERIES_HPC
+    + VM_SERIES_DC
+    + VM_SERIES_GPU
+)
+
+# Complete catalog: every known series
+VM_SERIES_ALL = (
+    VM_SERIES_BURSTABLE
+    + VM_SERIES_NON_BURSTABLE
+    + VM_SERIES_SPECIALTY
+)
 
 # Latest generation only (v6/v7) - for fast queries
 VM_SERIES_LATEST = (
@@ -1143,9 +1327,6 @@ def main() -> None:
         if args.vm_sizes:
             logging.error("Cannot use --vm-sizes with per-core mode flags")
             sys.exit(1)
-        if getattr(args, "all_vm_series", False):
-            logging.error("Cannot use --all-vm-series with per-core mode flags")
-            sys.exit(1)
 
     # Build excluded regions set
     excluded_regions: set = set()
@@ -1255,7 +1436,10 @@ def main() -> None:
         use_single_query = False
         series_list: List[str] = []
 
-        if args.series:
+        if getattr(args, "all_vm_series", False):
+            # --all-vm-series: no catalog, single query, client-side filtering only
+            use_single_query = True
+        elif args.series:
             # Explicit series list - use multi-query mode
             series_list = [s.strip() for s in args.series.split(",") if s.strip()]
         elif getattr(args, "latest", False):
