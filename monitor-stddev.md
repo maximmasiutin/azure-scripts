@@ -138,6 +138,8 @@ An example of an unstable website can be seen at https://web.archive.org/web/202
 
 - `--tz-caption`: A text caption representing the timezone. This is used in the HTML report to display the local time. The default value is `"UTC"`.
 
+- `--page-title`: An optional title shown as a heading on the HTML status page. If not specified, no heading is shown. Example: `--page-title "github.com Status"`.
+
 - `--render-history-input` Render history from a JSON file (if specified, then you should also specify `--render-history-output`).
 
 - `--render-history-output`: Output PNG file for history.
