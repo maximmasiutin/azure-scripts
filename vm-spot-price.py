@@ -1326,6 +1326,12 @@ def main() -> None:
 
                 logging.debug(f"Query: {query}")
 
+                if args.dry_run:
+                    print("DRY RUN - Single-Query Mode (per-core):")
+                    print(f"URL: {api_url}")
+                    print(f"Filter: {query}")
+                    sys.exit(0)
+
                 page_start = time.time()
                 json_data = fetch_pricing_data(
                     api_url, {"$filter": query}, session, verbose=args.verbose
@@ -1383,6 +1389,31 @@ def main() -> None:
                         f"Querying {len(series_list)} VM series (~{estimated_pages} pages expected)..."
                     )
 
+                if args.dry_run:
+                    print("DRY RUN - Multi-Query Mode (per-core):")
+                    print(f"URL: {api_url}")
+                    print(f"Series count: {len(series_list)}")
+                    print(f"Series: {', '.join(series_list)}")
+                    for series_name in series_list:
+                        query = (
+                            "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' "
+                            "and serviceFamily eq 'Compute'"
+                        )
+                        query += f" and productName eq 'Virtual Machines {series_name} Series'"
+                        if not non_spot:
+                            query += SPOT_FILTER_CLAUSE
+                        if args.region:
+                            regions = [r.strip() for r in args.region.split(",") if r.strip()]
+                            if len(regions) == 1:
+                                query += f" and armRegionName eq '{regions[0]}'"
+                            elif len(regions) > 1:
+                                region_filter = " or ".join(
+                                    [f"armRegionName eq '{r}'" for r in regions]
+                                )
+                                query += f" and ({region_filter})"
+                        print(f"\n  [{series_name}] Filter: {query}")
+                    sys.exit(0)
+
                 for idx, series_name in enumerate(series_list):
                     if not return_region:
                         eta = PAGE_ESTIMATOR.get_eta_str(idx, len(series_list))
@@ -1412,7 +1443,7 @@ def main() -> None:
                             )
                             query += f" and ({region_filter})"
 
-                    logging.debug(f"Query: {query}")
+                    logging.debug(f"[{idx + 1}/{len(series_list)}] {series_name}: {query}")
 
                     try:
                         page_start = time.time()
@@ -1442,6 +1473,7 @@ def main() -> None:
                             break
 
                     # Process items for this series
+                    pre_count = len(per_core_data)
                     for item in items:
                         _process_per_core_item(
                             item,
@@ -1453,6 +1485,17 @@ def main() -> None:
                             excluded_vm_sizes,
                             excluded_sku_patterns,
                         )
+                    added = len(per_core_data) - pre_count
+                    regions_in_series = set()
+                    for item in items:
+                        rn = item.get("armRegionName", "")
+                        if rn:
+                            regions_in_series.add(rn)
+                    logging.debug(
+                        f"  {series_name}: {len(items)} API items, "
+                        f"{added} matched filters, "
+                        f"{len(regions_in_series)} regions"
+                    )
 
             if not return_region:
                 print()  # New line after progress
@@ -1469,6 +1512,11 @@ def main() -> None:
 
         # Sort by price per core
         per_core_data.sort(key=lambda x: x[2])
+
+        unique_regions = set(row[5] for row in per_core_data)
+        logging.debug(
+            f"Total: {len(per_core_data)} entries across {len(unique_regions)} regions"
+        )
 
         # Output results
         if return_region:
