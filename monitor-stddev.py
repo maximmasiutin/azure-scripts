@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional, Union, Dict, Any
 from types import FrameType
 from abc import ABC, abstractmethod
+import html
 import signal
 import sys
 import csv
@@ -695,6 +696,7 @@ def monitor_website(
     font_file_name: Optional[str],
     debug_output: bool,
     use_session: bool,
+    page_title: Optional[str] = None,
 ) -> None:
     """Main monitoring loop with improved memory management and error handling."""
     effective_latencies: List[float] = []
@@ -913,6 +915,10 @@ def monitor_website(
                 )
                 local_dt_str: str = local_dt.strftime("%Y-%m-%d %H:%M:%S ") + tz_caption
 
+                escaped_title: str = html.escape(page_title) if page_title else ""
+                title_prefix: str = f"{escaped_title} - " if escaped_title else ""
+                title_heading: str = f'<h1 class="title">{escaped_title}</h1>' if escaped_title else ""
+
                 data_html: str = f"""
                 <!DOCTYPE html>
                 <html lang="en">
@@ -921,7 +927,7 @@ def monitor_website(
                     <meta name="viewport" content="width=device-width, initial-scale=1.0">
                     <link rel="icon" href="favicon.ico" type="image/x-icon">
                     <meta http-equiv="refresh" content="60">
-                    <title>{health_text}</title>
+                    <title>{title_prefix}{health_text}</title>
                     <style>
                         body {{
                             display: flex;
@@ -932,6 +938,11 @@ def monitor_website(
                             margin: 0;
                             font-family: Helvetica, Arial, sans-serif;
                             text-align: center;
+                        }}
+                        h1.title {{
+                            font-size: 1.5em;
+                            font-weight: bold;
+                            margin-bottom: 0;
                         }}
                         .link {{
                             font-size: 1.2em;
@@ -956,6 +967,7 @@ def monitor_website(
                     </style>
                 </head>
                 <body>
+                    {title_heading}
                     <div class="status">{health_text}</div>
                     <div class="time">{local_dt_str}</div>
                     <div class="link"><a href="{save_name_json}">{save_name_json}</a></div>
@@ -1197,6 +1209,12 @@ def main() -> None:
     )
     parser.add_argument("--tz-caption", type=str, default="UTC", help="Time zone label")
     parser.add_argument(
+        "--page-title",
+        type=str,
+        default=None,
+        help="Optional title shown as a heading on the HTML status page",
+    )
+    parser.add_argument(
         "--render-history-input", type=str, help="Render history from a JSON file"
     )
     parser.add_argument(
@@ -1378,6 +1396,7 @@ def main() -> None:
             font_file_name=font_file_name,
             debug_output=args.debug,
             use_session=args.use_session,
+            page_title=args.page_title,
         )
     else:
         parser.print_help(stderr)
