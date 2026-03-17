@@ -27,17 +27,50 @@
 .PARAMETER ResourceGroup
     Name of the Azure resource group to scan.
 
+.PARAMETER Delete
+    Delete orphaned phantom resources found in the resource group.
+    Only deletes resources that are BOTH invisible to "az resource list"
+    (phantom due to casing bug) AND orphaned (no active dependencies).
+
+    Safe to delete: detached NICs, unattached disks, unused public IPs,
+    empty VNets, unused NSGs/route tables.
+
+    Never auto-deleted: VMs, storage accounts, databases, key vaults,
+    or any resource with active dependencies.
+
+    Requires -Force to actually execute deletions. Without -Force,
+    acts as a dry run (same as -DryRun).
+
+.PARAMETER DryRun
+    Show which phantom resources would be deleted, without deleting.
+
+.PARAMETER Force
+    Required with -Delete to actually execute deletions.
+    Without -Force, -Delete behaves as a dry run.
+
+.PARAMETER DeleteResourceGroup
+    After deleting all phantom resources, also delete the resource group
+    itself. Requires -Delete and -Force.
+
 .EXAMPLE
     pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10"
 
     Scans FishtestSpotRG-10 for phantom resources and prints resource IDs.
 
 .EXAMPLE
-    pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"
+    pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10" -DryRun
 
-    After finding resources, delete them and the RG:
-      az resource delete --ids "<resource-id-from-output>"
-      az group delete -n "MyRG" --yes
+    Shows which phantom resources are orphaned and safe to delete.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10" -Delete -Force
+
+    Deletes orphaned phantom resources in the resource group.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10" -Delete -Force -DeleteResourceGroup
+
+    Deletes orphaned phantom resources, then deletes the resource group.
 
 .NOTES
     Requires: Azure CLI (az) authenticated and with an active subscription.
@@ -45,29 +78,261 @@
 
 param(
     [Parameter(Mandatory=$true, HelpMessage="Name of the Azure resource group to scan")]
-    [string]$ResourceGroup
+    [string]$ResourceGroup,
+
+    [Parameter(HelpMessage="Delete orphaned phantom resources")]
+    [switch]$Delete,
+
+    [Parameter(HelpMessage="Show what would be deleted without deleting")]
+    [switch]$DryRun,
+
+    [Parameter(HelpMessage="Required with -Delete to confirm deletions")]
+    [switch]$Force,
+
+    [Parameter(HelpMessage="Also delete the resource group after cleaning phantom resources")]
+    [switch]$DeleteResourceGroup
 )
+
+# Validate parameter combinations
+if ($DeleteResourceGroup -and (-not $Delete -or -not $Force)) {
+    Write-Host "ERROR: -DeleteResourceGroup requires -Delete -Force." -ForegroundColor Red
+    exit 1
+}
+if ($DryRun -and $Delete) {
+    Write-Host "ERROR: Use -Delete -Force to delete, or -DryRun to preview. Not both." -ForegroundColor Red
+    exit 1
+}
+
+# -Delete without -Force is a dry run with a hint
+$effectiveDryRun = $DryRun -or ($Delete -and -not $Force)
+if ($Delete -and -not $Force) {
+    Write-Host "NOTE: -Delete without -Force acts as dry run. Add -Force to execute." -ForegroundColor Yellow
+}
+
+# Resource types that are NEVER auto-deleted (active workloads / data stores)
+$neverDeleteTypes = @(
+    "Microsoft.Compute/virtualMachines",
+    "Microsoft.Storage/storageAccounts",
+    "Microsoft.Sql/servers",
+    "Microsoft.Sql/servers/databases",
+    "Microsoft.DocumentDB/databaseAccounts",
+    "Microsoft.KeyVault/vaults",
+    "Microsoft.ContainerRegistry/registries",
+    "Microsoft.ContainerService/managedClusters",
+    "Microsoft.Web/sites",
+    "Microsoft.Web/serverFarms",
+    "Microsoft.CognitiveServices/accounts",
+    "Microsoft.MachineLearningServices/workspaces"
+)
+
+# Resource types that are safe to delete when orphaned
+$safeDeleteTypes = @(
+    "Microsoft.Compute/disks",
+    "Microsoft.Network/networkInterfaces",
+    "Microsoft.Network/publicIPAddresses",
+    "Microsoft.Network/virtualNetworks",
+    "Microsoft.Network/networkSecurityGroups",
+    "Microsoft.Network/routeTables",
+    "Microsoft.Network/loadBalancers",
+    "Microsoft.Network/privateDnsZones",
+    "Microsoft.Network/privateEndpoints"
+)
+
+function Invoke-AzRest {
+    <#
+    .SYNOPSIS
+        Call az rest and return parsed JSON, or $null on failure.
+    #>
+    param([string]$Url)
+    try {
+        $result = az rest --method GET --url $Url --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) { return $null }
+        return $result | ConvertFrom-Json
+    } catch {
+        return $null
+    }
+}
+
+function Test-ResourceOrphaned {
+    <#
+    .SYNOPSIS
+        Check if a resource is orphaned (no active dependencies).
+    .DESCRIPTION
+        Queries the resource via REST API to inspect attachment/dependency fields.
+        Returns $true if the resource has no active parent or consumer.
+    #>
+    param(
+        [string]$ResourceId,
+        [string]$ResourceType
+    )
+
+    switch ($ResourceType) {
+        "Microsoft.Compute/disks" {
+            $disk = Invoke-AzRest -Url "${ResourceId}?api-version=2024-03-02"
+            if ($null -ne $disk) {
+                $managedBy = $disk.managedBy
+                if ([string]::IsNullOrWhiteSpace($managedBy)) {
+                    return $true
+                }
+                $vmCheck = Invoke-AzRest -Url "${managedBy}?api-version=2024-07-01"
+                if ($null -eq $vmCheck) {
+                    return $true  # VM no longer exists
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/networkInterfaces" {
+            $nic = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $nic) {
+                $vmRef = $nic.properties.virtualMachine
+                if ($null -eq $vmRef -or [string]::IsNullOrWhiteSpace($vmRef.id)) {
+                    return $true
+                }
+                $vmCheck = Invoke-AzRest -Url "$($vmRef.id)?api-version=2024-07-01"
+                if ($null -eq $vmCheck) {
+                    return $true  # VM no longer exists
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/publicIPAddresses" {
+            $pip = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $pip) {
+                $ipConfig = $pip.properties.ipConfiguration
+                if ($null -eq $ipConfig -or [string]::IsNullOrWhiteSpace($ipConfig.id)) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/virtualNetworks" {
+            $vnet = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $vnet) {
+                $subnets = $vnet.properties.subnets
+                if ($null -eq $subnets -or $subnets.Count -eq 0) {
+                    return $true
+                }
+                foreach ($subnet in $subnets) {
+                    $ipConfigs = $subnet.properties.ipConfigurations
+                    if ($null -ne $ipConfigs -and $ipConfigs.Count -gt 0) {
+                        return $false
+                    }
+                    $delegations = $subnet.properties.delegations
+                    if ($null -ne $delegations -and $delegations.Count -gt 0) {
+                        return $false
+                    }
+                }
+                return $true
+            }
+            return $false
+        }
+        "Microsoft.Network/networkSecurityGroups" {
+            $nsg = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $nsg) {
+                $subnets = $nsg.properties.subnets
+                $nics = $nsg.properties.networkInterfaces
+                if (($null -eq $subnets -or $subnets.Count -eq 0) -and
+                    ($null -eq $nics -or $nics.Count -eq 0)) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/routeTables" {
+            $rt = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $rt) {
+                $subnets = $rt.properties.subnets
+                if ($null -eq $subnets -or $subnets.Count -eq 0) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/loadBalancers" {
+            $lb = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $lb) {
+                $pools = $lb.properties.backendAddressPools
+                if ($null -eq $pools -or $pools.Count -eq 0) {
+                    return $true
+                }
+                foreach ($pool in $pools) {
+                    $targets = $pool.properties.backendIPConfigurations
+                    if ($null -ne $targets -and $targets.Count -gt 0) {
+                        return $false
+                    }
+                }
+                return $true
+            }
+            return $false
+        }
+        "Microsoft.Network/privateEndpoints" {
+            $pe = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $pe) {
+                $connections = $pe.properties.privateLinkServiceConnections
+                $manualConns = $pe.properties.manualPrivateLinkServiceConnections
+                $allConns = @()
+                if ($null -ne $connections) { $allConns += $connections }
+                if ($null -ne $manualConns) { $allConns += $manualConns }
+                if ($allConns.Count -eq 0) {
+                    return $true
+                }
+                foreach ($conn in $allConns) {
+                    $status = $conn.properties.privateLinkServiceConnectionState.status
+                    if ($status -eq "Approved" -or $status -eq "Pending") {
+                        return $false  # Active connection
+                    }
+                }
+                return $true  # All connections disconnected/rejected
+            }
+            return $false
+        }
+        "Microsoft.Network/privateDnsZones" {
+            $zone = Invoke-AzRest -Url "${ResourceId}?api-version=2024-06-01"
+            if ($null -ne $zone) {
+                $vnetLinks = Invoke-AzRest -Url "${ResourceId}/virtualNetworkLinks?api-version=2024-06-01"
+                if ($null -ne $vnetLinks -and $null -ne $vnetLinks.value -and $vnetLinks.value.Count -gt 0) {
+                    return $false  # Has VNet links
+                }
+                $recordSets = $zone.properties.numberOfRecordSets
+                if ($null -ne $recordSets -and $recordSets -gt 2) {
+                    return $false  # Has records beyond SOA+NS defaults
+                }
+                return $true
+            }
+            return $false
+        }
+        default {
+            # Unknown type in safe-delete list: do NOT assume orphaned
+            return $false
+        }
+    }
+}
 
 Write-Host "Scanning for phantom resources in RG: $ResourceGroup" -ForegroundColor Cyan
 
 # 0. REST API direct query - most reliable method.
-# Queries ARM by resource group path, bypassing case-sensitive JMESPath filtering.
-# This is the only method guaranteed to find all resources.
 Write-Host "`n=== REST API Direct Query (most reliable) ==="
 $subscriptionId = az account show --query id -o tsv
 $restUrl = "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/resources?api-version=2024-03-01"
-$restResult = az rest --method GET --url $restUrl 2>&1
+$restResult = az rest --method GET --url $restUrl --only-show-errors 2>&1
+$restResources = @()
 if ($LASTEXITCODE -eq 0) {
-    $parsed = $restResult | ConvertFrom-Json
-    if ($parsed.value.Count -gt 0) {
-        Write-Host "  Found $($parsed.value.Count) resource(s) via REST API:" -ForegroundColor Yellow
-        $parsed.value | Format-Table name, type, location -AutoSize
-        Write-Host "`n  Resource IDs (use 'az resource delete --ids <id>' to remove):" -ForegroundColor Yellow
-        foreach ($r in $parsed.value) {
-            Write-Host "    $($r.id)"
+    try {
+        $parsed = $restResult | ConvertFrom-Json
+        if ($parsed.value.Count -gt 0) {
+            $restResources = $parsed.value
+            Write-Host "  Found $($restResources.Count) resource(s) via REST API:" -ForegroundColor Yellow
+            $restResources | Format-Table name, type, location -AutoSize
+            Write-Host "`n  Resource IDs (use 'az resource delete --ids <id>' to remove):" -ForegroundColor Yellow
+            foreach ($r in $restResources) {
+                Write-Host "    $($r.id)"
+            }
+        } else {
+            Write-Host "  No resources found via REST API"
         }
-    } else {
-        Write-Host "  No resources found via REST API"
+    } catch {
+        Write-Host "  ERROR: Failed to parse REST API response: $_" -ForegroundColor Red
+        exit 1
     }
 } else {
     Write-Host "  REST API query failed: $restResult" -ForegroundColor Red
@@ -75,7 +340,47 @@ if ($LASTEXITCODE -eq 0) {
 
 # 1. Generic ARM resources (may miss resources with casing mismatch)
 Write-Host "`n=== ARM Resources (az resource list) ==="
-az resource list -g $ResourceGroup -o table
+$armListJson = az resource list -g $ResourceGroup -o json --only-show-errors 2>&1
+$armResources = @()
+if ($LASTEXITCODE -eq 0) {
+    try {
+        $armParsed = $armListJson | ConvertFrom-Json
+        if ($armParsed.Count -gt 0) {
+            $armResources = $armParsed
+            $armResources | Format-Table name, type, location -AutoSize
+        } else {
+            Write-Host "  (none visible - likely casing mismatch)"
+        }
+    } catch {
+        Write-Host "  ERROR: Failed to parse az resource list output." -ForegroundColor Red
+        Write-Host "  Aborting to prevent misclassifying resources as phantom." -ForegroundColor Red
+        exit 1
+    }
+} else {
+    Write-Host "  ERROR: az resource list failed (auth/subscription issue?)." -ForegroundColor Red
+    Write-Host "  Aborting to prevent misclassifying resources as phantom." -ForegroundColor Red
+    exit 1
+}
+
+# Identify phantom resources: in REST API but not in az resource list
+$armIds = @{}
+foreach ($r in $armResources) {
+    $armIds[$r.id.ToLower()] = $true
+}
+$phantomResources = [System.Collections.Generic.List[object]]::new()
+foreach ($r in $restResources) {
+    if (-not $armIds.ContainsKey($r.id.ToLower())) {
+        $phantomResources.Add($r)
+    }
+}
+
+if ($phantomResources.Count -gt 0) {
+    Write-Host "`n=== Phantom Resources (invisible to 'az resource list') ===" -ForegroundColor Yellow
+    Write-Host "  Found $($phantomResources.Count) phantom resource(s):" -ForegroundColor Yellow
+    $phantomResources | Format-Table name, type, location -AutoSize
+} else {
+    Write-Host "`n  No phantom resources detected (all resources visible to 'az resource list')."
+}
 
 # 2. NICs (case-sensitive JMESPath filter)
 Write-Host "`n=== Network Interfaces (NICs) ==="
@@ -128,5 +433,157 @@ az resource list --query "[?managedBy!='']" -o table
 # 12. Failed deployments
 Write-Host "`n=== Failed Deployments ==="
 az deployment group list -g $ResourceGroup -o table
+
+# --- Delete / DryRun mode ---
+if ($DryRun -or $Delete) {
+    Write-Host "`n=============================================" -ForegroundColor Cyan
+    if ($effectiveDryRun) {
+        Write-Host "=== DRY RUN: Analyzing phantom resources ===" -ForegroundColor Cyan
+    } else {
+        Write-Host "=== DELETE MODE: Analyzing phantom resources ===" -ForegroundColor Red
+    }
+    Write-Host "=============================================`n" -ForegroundColor Cyan
+
+    if ($phantomResources.Count -eq 0) {
+        Write-Host "  No phantom resources to process." -ForegroundColor Green
+        Write-Host "`nScan complete." -ForegroundColor Green
+        exit 0
+    }
+
+    $toDelete = [System.Collections.Generic.List[object]]::new()
+    $toSkip = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($r in $phantomResources) {
+        $rType = $r.type
+        $rName = $r.name
+        $rId = $r.id
+
+        # Check never-delete list first
+        if ($neverDeleteTypes -contains $rType) {
+            $toSkip.Add([PSCustomObject]@{
+                Name = $rName
+                Type = $rType
+                Reason = "Protected type (active workload)"
+                Id = $rId
+            })
+            continue
+        }
+
+        # Check if type is in safe-delete list
+        if ($safeDeleteTypes -notcontains $rType) {
+            $toSkip.Add([PSCustomObject]@{
+                Name = $rName
+                Type = $rType
+                Reason = "Unknown type (not in safe-delete list)"
+                Id = $rId
+            })
+            continue
+        }
+
+        # Check if orphaned
+        Write-Host "  Checking: $rName ($rType)..." -NoNewline
+        $isOrphaned = Test-ResourceOrphaned -ResourceId $rId -ResourceType $rType
+        if ($isOrphaned) {
+            Write-Host " ORPHANED" -ForegroundColor Yellow
+            $toDelete.Add([PSCustomObject]@{
+                Name = $rName
+                Type = $rType
+                Id = $rId
+            })
+        } else {
+            Write-Host " IN USE" -ForegroundColor Green
+            $toSkip.Add([PSCustomObject]@{
+                Name = $rName
+                Type = $rType
+                Reason = "Has active dependencies"
+                Id = $rId
+            })
+        }
+    }
+
+    # Report
+    if ($toSkip.Count -gt 0) {
+        Write-Host "`n  SKIPPED (will NOT delete):" -ForegroundColor Green
+        foreach ($s in $toSkip) {
+            Write-Host "    [SKIP] $($s.Name) ($($s.Type)) - $($s.Reason)" -ForegroundColor Green
+        }
+    }
+
+    if ($toDelete.Count -gt 0) {
+        Write-Host "`n  DELETABLE (orphaned phantom resources):" -ForegroundColor Yellow
+        foreach ($d in $toDelete) {
+            Write-Host "    [DELETE] $($d.Name) ($($d.Type))" -ForegroundColor Yellow
+            Write-Host "             $($d.Id)" -ForegroundColor DarkYellow
+        }
+
+        if ($effectiveDryRun) {
+            Write-Host "`n  DRY RUN: No resources were deleted." -ForegroundColor Cyan
+            Write-Host "  To delete, run with: -Delete -Force" -ForegroundColor Cyan
+        } else {
+            Write-Host "`n  Deleting $($toDelete.Count) orphaned phantom resource(s)..." -ForegroundColor Red
+
+            # Delete in dependency order: NICs before VNets, disks anytime
+            $deleteOrder = @(
+                "Microsoft.Compute/disks",
+                "Microsoft.Network/networkInterfaces",
+                "Microsoft.Network/publicIPAddresses",
+                "Microsoft.Network/loadBalancers",
+                "Microsoft.Network/privateEndpoints",
+                "Microsoft.Network/privateDnsZones",
+                "Microsoft.Network/networkSecurityGroups",
+                "Microsoft.Network/routeTables",
+                "Microsoft.Network/virtualNetworks"
+            )
+
+            $deletedCount = 0
+            $failedCount = 0
+
+            foreach ($dtype in $deleteOrder) {
+                $batch = $toDelete | Where-Object { $_.Type -eq $dtype }
+                foreach ($d in $batch) {
+                    Write-Host "    Deleting $($d.Name) ($($d.Type))..." -NoNewline
+                    $deleteOutput = az resource delete --ids $d.Id 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host " OK" -ForegroundColor Green
+                        $deletedCount++
+                    } else {
+                        Write-Host " FAILED" -ForegroundColor Red
+                        Write-Host "      Error: $deleteOutput" -ForegroundColor DarkRed
+                        $failedCount++
+                    }
+                }
+            }
+
+            Write-Host "`n  Deleted: $deletedCount, Failed: $failedCount" -ForegroundColor $(if ($failedCount -gt 0) { "Yellow" } else { "Green" })
+
+            if ($DeleteResourceGroup -and $failedCount -eq 0) {
+                # Re-check if the RG is now empty
+                $remainParsed = Invoke-AzRest -Url "/subscriptions/$subscriptionId/resourceGroups/$ResourceGroup/resources?api-version=2024-03-01"
+                if ($null -eq $remainParsed) {
+                    Write-Host "`n  ERROR: Could not verify RG is empty (REST query failed). Skipping RG deletion for safety." -ForegroundColor Red
+                } elseif ($null -eq $remainParsed.value) {
+                    Write-Host "`n  ERROR: Unexpected REST response (no .value). Skipping RG deletion for safety." -ForegroundColor Red
+                } elseif ($remainParsed.value.Count -eq 0) {
+                    Write-Host "`n  Resource group is empty. Deleting $ResourceGroup..." -NoNewline
+                    $rgDeleteOutput = az group delete -n $ResourceGroup --yes 2>&1
+                    if ($LASTEXITCODE -eq 0) {
+                        Write-Host " OK" -ForegroundColor Green
+                    } else {
+                        Write-Host " FAILED" -ForegroundColor Red
+                        Write-Host "      Error: $rgDeleteOutput" -ForegroundColor DarkRed
+                    }
+                } else {
+                    Write-Host "`n  Resource group still has $($remainParsed.value.Count) resource(s). Skipping RG deletion." -ForegroundColor Yellow
+                    Write-Host "  Run the scan again to see remaining resources." -ForegroundColor Yellow
+                }
+            }
+        }
+    } else {
+        Write-Host "`n  No orphaned phantom resources found to delete." -ForegroundColor Green
+        if ($phantomResources.Count -gt 0) {
+            Write-Host "  All phantom resources have active dependencies or are protected types." -ForegroundColor Yellow
+        }
+    }
+}
 
 Write-Host "`nScan complete." -ForegroundColor Green
