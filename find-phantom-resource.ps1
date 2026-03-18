@@ -400,6 +400,7 @@ if ($SubScan) {
 
     $allPhantoms  = [System.Collections.Generic.List[object]]::new()
     $deletingRGs  = [System.Collections.Generic.List[object]]::new()
+    $skippedRGs   = [System.Collections.Generic.List[string]]::new()
     $scannedCount = 0
 
     foreach ($rg in $rgList) {
@@ -416,6 +417,9 @@ if ($SubScan) {
         # Direct REST scan - same reliable method as single-RG mode.
         # Bypasses JMESPath casing bug and finds phantoms invisible to az resource list.
         # Paginates via nextLink so large RGs are fully covered.
+        # No secondary resource-location filter: the RG list was already scoped to
+        # -Region, so all resources in those RGs are relevant regardless of their
+        # individual location field.
         $items = [System.Collections.Generic.List[object]]::new()
         $nextUrl = "/subscriptions/$subscriptionId/resourceGroups/$rgName/resources?api-version=2024-03-01"
         $restFailed = $false
@@ -423,6 +427,7 @@ if ($SubScan) {
             $restResult = Invoke-AzRest -Url $nextUrl
             if ($null -eq $restResult -or $null -eq $restResult.value) {
                 Write-Host " (REST failed, skipped)"
+                $skippedRGs.Add("$rgName (REST)")
                 $restFailed = $true
                 break
             }
@@ -431,12 +436,7 @@ if ($SubScan) {
         }
         if ($restFailed) { continue }
 
-        # Filter by resource location if -Region specified.
-        if ($Region) {
-            $items = $items | Where-Object { $_.location -ieq $Region }
-        }
-
-        if ($null -eq $items -or $items.Count -eq 0) {
+        if ($items.Count -eq 0) {
             Write-Host " (no resources)"
             continue
         }
@@ -447,6 +447,7 @@ if ($SubScan) {
         $azListJson = az resource list -g $rgName -o json --only-show-errors 2>&1
         if ($LASTEXITCODE -ne 0) {
             Write-Host " (az resource list failed, skipped)"
+            $skippedRGs.Add("$rgName (az resource list)")
             continue
         }
         $azIds = @{}
@@ -455,6 +456,7 @@ if ($SubScan) {
             foreach ($r in $azParsed) { $azIds[$r.id.ToLower()] = $true }
         } catch {
             Write-Warning "Failed to parse 'az resource list' for '$rgName'. Phantom detection skipped for this RG."
+            $skippedRGs.Add("$rgName (az resource list parse)")
             continue
         }
 
@@ -504,6 +506,15 @@ if ($SubScan) {
         Write-Host "  To delete via REST:" -ForegroundColor Cyan
         Write-Host "    az rest --method DELETE --url 'https://management.azure.com/<full-resource-id>?api-version=...'" -ForegroundColor Cyan
         Write-Host "    where <full-resource-id> starts with /subscriptions/..." -ForegroundColor Cyan
+    }
+
+    if ($skippedRGs.Count -gt 0) {
+        Write-Warning "Scan incomplete - the following RG(s) were skipped due to errors:"
+        foreach ($s in $skippedRGs) {
+            Write-Warning "  $s"
+        }
+        Write-Host "`nPartial scan complete. Scanned $scannedCount RG(s), skipped $($skippedRGs.Count)." -ForegroundColor Yellow
+        exit 2
     }
 
     Write-Host "`nScan complete. Scanned $scannedCount RG(s)." -ForegroundColor Green
