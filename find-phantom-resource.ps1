@@ -398,17 +398,17 @@ if ($SubScan) {
         exit 0
     }
 
-    $allPhantoms  = [System.Collections.Generic.List[object]]::new()
-    $deletingRGs  = [System.Collections.Generic.List[object]]::new()
-    $skippedRGs   = [System.Collections.Generic.List[string]]::new()
-    $scannedCount = 0
+    $allPhantoms    = [System.Collections.Generic.List[object]]::new()
+    $deletingRGs    = [System.Collections.Generic.List[object]]::new()
+    $skippedRGs     = [System.Collections.Generic.List[string]]::new()
+    $attemptedCount = 0
 
     foreach ($rg in $rgList) {
         $rgName  = $rg.name
         $rgState = $rg.properties.provisioningState
-        $scannedCount++
+        $attemptedCount++
 
-        Write-Host "  [$scannedCount/$($rgList.Count)] $rgName ($rgState)..." -NoNewline
+        Write-Host "  [$attemptedCount/$($rgList.Count)] $rgName ($rgState)..." -NoNewline
 
         if ($rgState -eq "Deleting") {
             $deletingRGs.Add($rg)
@@ -513,11 +513,12 @@ if ($SubScan) {
         foreach ($s in $skippedRGs) {
             Write-Warning "  $s"
         }
-        Write-Host "`nPartial scan complete. Scanned $scannedCount RG(s), skipped $($skippedRGs.Count)." -ForegroundColor Yellow
+        $successCount = $attemptedCount - $skippedRGs.Count
+        Write-Host "`nPartial scan complete. Scanned $successCount of $attemptedCount RG(s), skipped $($skippedRGs.Count)." -ForegroundColor Yellow
         exit 2
     }
 
-    Write-Host "`nScan complete. Scanned $scannedCount RG(s)." -ForegroundColor Green
+    Write-Host "`nScan complete. Scanned $attemptedCount RG(s)." -ForegroundColor Green
     exit 0
 }
 
