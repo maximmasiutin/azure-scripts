@@ -24,8 +24,11 @@
       5. Subscription-wide scan for resources with managedBy field
       6. Failed deployments in the resource group
 
+    With -SubScan: subscription-wide scan for resources in a region whose
+    resource group does not exist or is in "Deleting" state.
+
 .PARAMETER ResourceGroup
-    Name of the Azure resource group to scan.
+    Name of the Azure resource group to scan. Required unless -SubScan is used.
 
 .PARAMETER Delete
     Delete orphaned phantom resources found in the resource group.
@@ -52,6 +55,15 @@
     After deleting all phantom resources, also delete the resource group
     itself. Requires -Delete and -Force.
 
+.PARAMETER SubScan
+    Subscription-wide scan mode. Finds resources whose resource group does not
+    exist or is in "Deleting" state. Use with -Region to filter by location.
+    Cannot be combined with -ResourceGroup.
+
+.PARAMETER Region
+    Azure region name (e.g. "centralindia") to filter resources in -SubScan mode.
+    Without this, all regions are scanned (slow).
+
 .EXAMPLE
     pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10"
 
@@ -72,13 +84,24 @@
 
     Deletes orphaned phantom resources, then deletes the resource group.
 
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"
+
+    Finds all resources in centralindia whose resource group is missing or stuck.
+
 .NOTES
     Requires: Azure CLI (az) authenticated and with an active subscription.
 #>
 
 param(
-    [Parameter(Mandatory=$true, HelpMessage="Name of the Azure resource group to scan")]
+    [Parameter(HelpMessage="Name of the Azure resource group to scan")]
     [string]$ResourceGroup,
+
+    [Parameter(HelpMessage="Subscription-wide scan: find resources whose RG is missing or in Deleting state")]
+    [switch]$SubScan,
+
+    [Parameter(HelpMessage="Azure region to filter resources in -SubScan mode (e.g. centralindia)")]
+    [string]$Region,
 
     [Parameter(HelpMessage="Delete orphaned phantom resources")]
     [switch]$Delete,
@@ -94,6 +117,18 @@ param(
 )
 
 # Validate parameter combinations
+if ($SubScan -and $ResourceGroup) {
+    Write-Host "ERROR: -SubScan and -ResourceGroup are mutually exclusive." -ForegroundColor Red
+    exit 1
+}
+if (-not $SubScan -and -not $ResourceGroup) {
+    Write-Host "ERROR: Provide -ResourceGroup <name> or -SubScan." -ForegroundColor Red
+    exit 1
+}
+if ($SubScan -and ($Delete -or $DeleteResourceGroup)) {
+    Write-Host "ERROR: -Delete and -DeleteResourceGroup are not supported in -SubScan mode." -ForegroundColor Red
+    exit 1
+}
 if ($DeleteResourceGroup -and (-not $Delete -or -not $Force)) {
     Write-Host "ERROR: -DeleteResourceGroup requires -Delete -Force." -ForegroundColor Red
     exit 1
@@ -308,6 +343,108 @@ function Test-ResourceOrphaned {
     }
 }
 
+# ============================================================
+# SUBSCAN MODE: subscription-wide orphan search by region
+# ============================================================
+if ($SubScan) {
+    $subscriptionId = az account show --query id -o tsv
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Failed to get subscription ID." -ForegroundColor Red
+        exit 1
+    }
+
+    $regionLabel = if ($Region) { $Region } else { "all regions" }
+    Write-Host "Subscription-wide orphan scan: $regionLabel" -ForegroundColor Cyan
+    Write-Host "Subscription: $subscriptionId`n"
+
+    # Use Azure Resource Graph for reliable subscription-wide query.
+    # The ARM REST $filter=location is known to return incomplete results.
+    # Resource Graph requires the resource-graph extension: az extension add --name resource-graph
+    $allResources = [System.Collections.Generic.List[object]]::new()
+    $locationFilter = if ($Region) { "| where location == '$Region'" } else { "" }
+    $kqlQuery = "Resources $locationFilter | project id, name, type, location, resourceGroup"
+    Write-Host "  Running Resource Graph query..."
+    $graphJson = az graph query -q $kqlQuery --output json --only-show-errors 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Resource Graph query failed: $graphJson" -ForegroundColor Red
+        Write-Host "Ensure the resource-graph extension is installed: az extension add --name resource-graph" -ForegroundColor Yellow
+        exit 1
+    }
+    try {
+        $graphResult = $graphJson | ConvertFrom-Json
+        $items = $graphResult.data
+        if ($null -ne $items) {
+            foreach ($item in $items) { $allResources.Add($item) }
+        }
+    } catch {
+        Write-Host "ERROR: Failed to parse Resource Graph response: $_" -ForegroundColor Red
+        exit 1
+    }
+
+    Write-Host "  Total resources retrieved: $($allResources.Count)`n"
+
+    if ($allResources.Count -eq 0) {
+        Write-Host "No resources found for the specified filter." -ForegroundColor Yellow
+        exit 0
+    }
+
+    # Cache RG status to avoid redundant queries
+    $rgStatusCache = @{}
+
+    function Get-RgStatus {
+        param([string]$RgName)
+        $key = $RgName.ToLower()
+        if ($rgStatusCache.ContainsKey($key)) {
+            return $rgStatusCache[$key]
+        }
+        $rgData = Invoke-AzRest -Url "/subscriptions/$subscriptionId/resourceGroups/$RgName`?api-version=2021-04-01"
+        if ($null -eq $rgData) {
+            $rgStatusCache[$key] = "NotFound"
+            return "NotFound"
+        }
+        $state = $rgData.properties.provisioningState
+        $rgStatusCache[$key] = $state
+        return $state
+    }
+
+    # Check each resource's RG
+    $orphanedResources = [System.Collections.Generic.List[object]]::new()
+    foreach ($r in $allResources) {
+        $rgName = $r.resourceGroup
+        if ([string]::IsNullOrWhiteSpace($rgName)) {
+            continue
+        }
+        $rgStatus = Get-RgStatus -RgName $rgName
+        if ($rgStatus -eq "NotFound" -or $rgStatus -eq "Deleting") {
+            $orphanedResources.Add([PSCustomObject]@{
+                Name          = $r.name
+                Type          = $r.type
+                Location      = $r.location
+                ResourceGroup = $rgName
+                RgStatus      = $rgStatus
+                Id            = $r.id
+            })
+        }
+    }
+
+    if ($orphanedResources.Count -eq 0) {
+        Write-Host "No orphaned resources found (all resource groups active)." -ForegroundColor Green
+    } else {
+        Write-Host "=== Orphaned Resources (RG missing or in Deleting state) ===" -ForegroundColor Yellow
+        Write-Host "  Found $($orphanedResources.Count) orphaned resource(s):`n" -ForegroundColor Yellow
+        $orphanedResources | Format-Table Name, Type, Location, ResourceGroup, RgStatus -AutoSize
+        Write-Host "`n  Resource IDs:" -ForegroundColor Yellow
+        foreach ($o in $orphanedResources) {
+            Write-Host "    [$($o.RgStatus)] $($o.Id)"
+        }
+    }
+    Write-Host "`nScan complete." -ForegroundColor Green
+    exit 0
+}
+
+# ============================================================
+# SINGLE-RG MODE
+# ============================================================
 Write-Host "Scanning for phantom resources in RG: $ResourceGroup" -ForegroundColor Cyan
 
 # 0. REST API direct query - most reliable method.

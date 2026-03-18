@@ -143,7 +143,7 @@ set -euo pipefail
 readonly TMP_LABEL="Temporary Storage"
 readonly SWAP_MOUNT="/mnt/temporary_storage"
 readonly FALLBACK_SWAPFILE="/mnt/swapfile"
-readonly SWAPPINESS="10"
+readonly SWAPPINESS="160"
 readonly RESUME_CONF="/etc/initramfs-tools/conf.d/resume"
 readonly FSTAB="/etc/fstab"
 readonly SYSCTL_CONF="/etc/sysctl.conf"
@@ -500,11 +500,15 @@ RemainAfterExit=yes
 TimeoutStartSec=300
 StandardOutput=journal
 StandardError=journal
-PrivateTmp=true                                    # Isolate /tmp for security
-ProtectSystem=strict                               # Protect system directories
-ReadWritePaths=/etc /mnt /var/log                  # Allow writes only where needed
-NoNewPrivileges=false                              # Allow privilege escalation for swap ops
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER  # Minimal required capabilities
+# Isolate /tmp for security
+PrivateTmp=true
+# Protect system directories, allow writes only where needed
+ProtectSystem=strict
+ReadWritePaths=/etc /mnt /var/log
+# Allow privilege escalation for swap ops
+NoNewPrivileges=false
+# Minimal required capabilities
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_FOWNER
 
 [Install]
 WantedBy=multi-user.target
