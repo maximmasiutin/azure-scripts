@@ -373,18 +373,20 @@ if ($SubScan) {
     Write-Host "Subscription: $subscriptionId`n"
 
     # List resource groups, optionally filtered by location.
+    # JMESPath location== is case-sensitive, so fetch all RGs and filter in PowerShell
+    # with -ieq to handle mixed-case input (e.g. "CentralIndia" vs "centralindia").
     # Note: -Region filters by RG location. Resources in the target region whose
     # RG is located elsewhere require running without -Region to be found.
     Write-Host "  Listing resource groups..." -NoNewline
-    $rgQuery = if ($Region) { "[?location=='$Region']" } else { "[]" }
-    $rgListJson = az group list --query $rgQuery -o json --only-show-errors 2>&1
+    $rgListJson = az group list -o json --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host " FAILED" -ForegroundColor Red
         Write-Host "ERROR: az group list failed. Check authentication." -ForegroundColor Red
         exit 1
     }
     try {
-        $rgList = $rgListJson | ConvertFrom-Json
+        $rgListAll = $rgListJson | ConvertFrom-Json
+        $rgList = if ($Region) { @($rgListAll | Where-Object { $_.location -ieq $Region }) } else { $rgListAll }
     } catch {
         Write-Host " FAILED (parse error: $_)" -ForegroundColor Red
         exit 1
@@ -413,12 +415,21 @@ if ($SubScan) {
 
         # Direct REST scan - same reliable method as single-RG mode.
         # Bypasses JMESPath casing bug and finds phantoms invisible to az resource list.
-        $restResult = Invoke-AzRest -Url "/subscriptions/$subscriptionId/resourceGroups/$rgName/resources?api-version=2024-03-01"
-        if ($null -eq $restResult -or $null -eq $restResult.value) {
-            Write-Host " (REST failed, skipped)"
-            continue
+        # Paginates via nextLink so large RGs are fully covered.
+        $items = [System.Collections.Generic.List[object]]::new()
+        $nextUrl = "/subscriptions/$subscriptionId/resourceGroups/$rgName/resources?api-version=2024-03-01"
+        $restFailed = $false
+        while ($nextUrl) {
+            $restResult = Invoke-AzRest -Url $nextUrl
+            if ($null -eq $restResult -or $null -eq $restResult.value) {
+                Write-Host " (REST failed, skipped)"
+                $restFailed = $true
+                break
+            }
+            foreach ($item in $restResult.value) { $items.Add($item) }
+            $nextUrl = $restResult.nextLink
         }
-        $items = $restResult.value
+        if ($restFailed) { continue }
 
         # Filter by resource location if -Region specified.
         if ($Region) {
@@ -431,13 +442,20 @@ if ($SubScan) {
         }
 
         # az resource list for comparison - may miss phantoms due to casing mismatch.
+        # Skip this RG if az resource list fails or parse fails: an empty baseline
+        # would flag every REST-visible resource as phantom (false positives).
         $azListJson = az resource list -g $rgName -o json --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host " (az resource list failed, skipped)"
+            continue
+        }
         $azIds = @{}
-        if ($LASTEXITCODE -eq 0) {
-            try {
-                $azParsed = $azListJson | ConvertFrom-Json
-                foreach ($r in $azParsed) { $azIds[$r.id.ToLower()] = $true }
-            } catch {}
+        try {
+            $azParsed = $azListJson | ConvertFrom-Json
+            foreach ($r in $azParsed) { $azIds[$r.id.ToLower()] = $true }
+        } catch {
+            Write-Warning "Failed to parse 'az resource list' for '$rgName'. Phantom detection skipped for this RG."
+            continue
         }
 
         # Find phantoms: in direct REST but not in az resource list.
@@ -484,7 +502,8 @@ if ($SubScan) {
         }
         Write-Host ""
         Write-Host "  To delete via REST:" -ForegroundColor Cyan
-        Write-Host "    az rest --method DELETE --url 'https://management.azure.com<ID>?api-version=...'" -ForegroundColor Cyan
+        Write-Host "    az rest --method DELETE --url 'https://management.azure.com/<full-resource-id>?api-version=...'" -ForegroundColor Cyan
+        Write-Host "    where <full-resource-id> starts with /subscriptions/..." -ForegroundColor Cyan
     }
 
     Write-Host "`nScan complete. Scanned $scannedCount RG(s)." -ForegroundColor Green

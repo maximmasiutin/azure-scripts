@@ -29,7 +29,7 @@
 
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
 1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
-1. **find-phantom-resource.ps1**: Finds and deletes hidden/phantom resources blocking resource group deletion. Uses ARM REST API directly to bypass JMESPath case-sensitivity bugs. Single-RG mode (`-ResourceGroup`) or subscription-wide scan (`-SubScan [-Region X]`). Supports `-Delete -Force` to remove orphaned phantoms and `-DeleteResourceGroup` to clean up the RG afterward. Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"` or `pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"`
+1. **find-phantom-resource.ps1**: Finds and deletes hidden/phantom resources blocking resource group deletion. Uses ARM REST API directly to bypass JMESPath case-sensitivity bugs. Modes: single-RG (`-ResourceGroup`, supports `-Delete -Force` and optional `-DeleteResourceGroup`) or subscription-wide scan (`-SubScan [-Region X]`, scan-only). Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"` or `pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"`
 1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
 ## Details
@@ -217,7 +217,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 3. **find-phantom-resource.ps1**: Find and delete hidden/phantom resources blocking resource group deletion, with subscription-wide scan support
    - **Problem**: Azure Portal shows resources (Public IPs, VNets, NICs) in a resource group, but `az resource list` and `az network * list` all return empty. The resource group cannot be deleted. Also handles 409 Conflict errors when recreating resources that Azure claims still exist but are invisible.
    - **Root Cause**: `az network * list --query "[?resourceGroup=='X']"` uses JMESPath client-side filtering, which is case-sensitive. Azure stores resource group names with inconsistent internal casing (e.g., "FishtestSpotRG-9" in the portal vs "FISHTESTSPOTRG-9" in the backend). When casing differs, JMESPath silently returns zero results. Azure Resource Graph also does not index these phantom resources, so `az graph query` misses them too.
-   - **Solution**: Uses `az rest --method GET /resourceGroups/{RG}/resources` to query the ARM REST API directly by resource group path. This bypasses JMESPath entirely and returns all resources regardless of internal casing, including resources invisible to all other query methods.
+   - **Solution**: Uses `az rest --method GET /subscriptions/{subscriptionId}/resourceGroups/{RG}/resources` to query the ARM REST API directly. This bypasses JMESPath entirely and returns all resources regardless of internal casing, including resources invisible to all other query methods.
    - **Also checks**: NICs, subnets, private endpoints, private DNS zones, load balancers, route tables, NSGs, managedBy orphans, and failed deployments.
    - **Common cause**: Spot VM eviction or failed provisioning (especially region-change deployments) leaves orphaned network resources and OS disks in a stale location.
    - **Two operating modes**:
