@@ -24,8 +24,15 @@
       5. Subscription-wide scan for resources with managedBy field
       6. Failed deployments in the resource group
 
-    With -SubScan: subscription-wide scan for resources in a region whose
-    resource group does not exist or is in "Deleting" state.
+    With -SubScan: iterates all resource groups in the subscription (optionally
+    filtered by -Region), runs the direct REST scan on each, and reports:
+      - Phantom resources: visible via ARM REST but invisible to az resource list
+      - Deleting RGs: resource groups stuck in the Deleting state
+
+    This catches the same class of phantom resources as the single-RG mode but
+    across the entire subscription. The -Region filter restricts which RGs are
+    scanned (by RG location). Resources in the target region whose RG is located
+    in a different region require running -SubScan without -Region.
 
 .PARAMETER ResourceGroup
     Name of the Azure resource group to scan. Required unless -SubScan is used.
@@ -56,13 +63,15 @@
     itself. Requires -Delete and -Force.
 
 .PARAMETER SubScan
-    Subscription-wide scan mode. Finds resources whose resource group does not
-    exist or is in "Deleting" state. Use with -Region to filter by location.
+    Subscription-wide phantom scan. Iterates all RGs (or only RGs in -Region)
+    and applies the same direct REST scan as -ResourceGroup mode to each one.
+    Reports phantom resources and RGs in Deleting state.
     Cannot be combined with -ResourceGroup.
 
 .PARAMETER Region
-    Azure region name (e.g. "centralindia") to filter resources in -SubScan mode.
-    Without this, all regions are scanned (slow).
+    Azure region name (e.g. "centralindia"). In -SubScan mode: restricts scan
+    to RGs located in this region and further filters resources by this location.
+    Without -Region, all RGs in the subscription are scanned.
 
 .EXAMPLE
     pwsh find-phantom-resource.ps1 -ResourceGroup "FishtestSpotRG-10"
@@ -87,7 +96,13 @@
 .EXAMPLE
     pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"
 
-    Finds all resources in centralindia whose resource group is missing or stuck.
+    Scans all RGs in centralindia for phantom resources and Deleting RGs.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -SubScan
+
+    Scans all RGs in the subscription for phantom resources. Use when the
+    target resource may be in a region that differs from its RG location.
 
 .NOTES
     Requires: Azure CLI (az) authenticated and with an active subscription.
@@ -344,7 +359,7 @@ function Test-ResourceOrphaned {
 }
 
 # ============================================================
-# SUBSCAN MODE: subscription-wide orphan search by region
+# SUBSCAN MODE: subscription-wide phantom scan per RG
 # ============================================================
 if ($SubScan) {
     $subscriptionId = az account show --query id -o tsv
@@ -354,91 +369,155 @@ if ($SubScan) {
     }
 
     $regionLabel = if ($Region) { $Region } else { "all regions" }
-    Write-Host "Subscription-wide orphan scan: $regionLabel" -ForegroundColor Cyan
+    Write-Host "Subscription-wide phantom scan: $regionLabel" -ForegroundColor Cyan
     Write-Host "Subscription: $subscriptionId`n"
 
-    # Use Azure Resource Graph for reliable subscription-wide query.
-    # The ARM REST $filter=location is known to return incomplete results.
-    # Resource Graph requires the resource-graph extension: az extension add --name resource-graph
-    $allResources = [System.Collections.Generic.List[object]]::new()
-    $locationFilter = if ($Region) { "| where location == '$Region'" } else { "" }
-    $kqlQuery = "Resources $locationFilter | project id, name, type, location, resourceGroup"
-    Write-Host "  Running Resource Graph query..."
-    $graphJson = az graph query -q $kqlQuery --output json --only-show-errors 2>&1
+    # List resource groups, optionally filtered by location.
+    # JMESPath location== is case-sensitive, so fetch all RGs and filter in PowerShell
+    # with -ieq to handle mixed-case input (e.g. "CentralIndia" vs "centralindia").
+    # Note: -Region filters by RG location. Resources in the target region whose
+    # RG is located elsewhere require running without -Region to be found.
+    Write-Host "  Listing resource groups..." -NoNewline
+    $rgListJson = az group list -o json --only-show-errors 2>&1
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "ERROR: Resource Graph query failed: $graphJson" -ForegroundColor Red
-        Write-Host "Ensure the resource-graph extension is installed: az extension add --name resource-graph" -ForegroundColor Yellow
+        Write-Host " FAILED" -ForegroundColor Red
+        Write-Host "ERROR: az group list failed. Check authentication." -ForegroundColor Red
         exit 1
     }
     try {
-        $graphResult = $graphJson | ConvertFrom-Json
-        $items = $graphResult.data
-        if ($null -ne $items) {
-            foreach ($item in $items) { $allResources.Add($item) }
-        }
+        $rgListAll = $rgListJson | ConvertFrom-Json
+        $rgList = if ($Region) { @($rgListAll | Where-Object { $_.location -ieq $Region }) } else { $rgListAll }
     } catch {
-        Write-Host "ERROR: Failed to parse Resource Graph response: $_" -ForegroundColor Red
+        Write-Host " FAILED (parse error: $_)" -ForegroundColor Red
         exit 1
     }
+    Write-Host " $($rgList.Count) found"
 
-    Write-Host "  Total resources retrieved: $($allResources.Count)`n"
-
-    if ($allResources.Count -eq 0) {
-        Write-Host "No resources found for the specified filter." -ForegroundColor Yellow
+    if ($rgList.Count -eq 0) {
+        Write-Host "No resource groups found for the specified filter." -ForegroundColor Yellow
         exit 0
     }
 
-    # Cache RG status to avoid redundant queries
-    $rgStatusCache = @{}
+    $allPhantoms  = [System.Collections.Generic.List[object]]::new()
+    $deletingRGs  = [System.Collections.Generic.List[object]]::new()
+    $skippedRGs   = [System.Collections.Generic.List[string]]::new()
+    $scannedCount = 0
 
-    function Get-RgStatus {
-        param([string]$RgName)
-        $key = $RgName.ToLower()
-        if ($rgStatusCache.ContainsKey($key)) {
-            return $rgStatusCache[$key]
-        }
-        $rgData = Invoke-AzRest -Url "/subscriptions/$subscriptionId/resourceGroups/$RgName`?api-version=2021-04-01"
-        if ($null -eq $rgData) {
-            $rgStatusCache[$key] = "NotFound"
-            return "NotFound"
-        }
-        $state = $rgData.properties.provisioningState
-        $rgStatusCache[$key] = $state
-        return $state
-    }
+    foreach ($rg in $rgList) {
+        $rgName  = $rg.name
+        $rgState = $rg.properties.provisioningState
+        $scannedCount++
 
-    # Check each resource's RG
-    $orphanedResources = [System.Collections.Generic.List[object]]::new()
-    foreach ($r in $allResources) {
-        $rgName = $r.resourceGroup
-        if ([string]::IsNullOrWhiteSpace($rgName)) {
+        Write-Host "  [$scannedCount/$($rgList.Count)] $rgName ($rgState)..." -NoNewline
+
+        if ($rgState -eq "Deleting") {
+            $deletingRGs.Add($rg)
+        }
+
+        # Direct REST scan - same reliable method as single-RG mode.
+        # Bypasses JMESPath casing bug and finds phantoms invisible to az resource list.
+        # Paginates via nextLink so large RGs are fully covered.
+        # No secondary resource-location filter: the RG list was already scoped to
+        # -Region, so all resources in those RGs are relevant regardless of their
+        # individual location field.
+        $items = [System.Collections.Generic.List[object]]::new()
+        $nextUrl = "/subscriptions/$subscriptionId/resourceGroups/$rgName/resources?api-version=2024-03-01"
+        $restFailed = $false
+        while ($nextUrl) {
+            $restResult = Invoke-AzRest -Url $nextUrl
+            if ($null -eq $restResult -or $null -eq $restResult.value) {
+                Write-Host " (REST failed, skipped)"
+                $skippedRGs.Add("$rgName (REST)")
+                $restFailed = $true
+                break
+            }
+            foreach ($item in $restResult.value) { $items.Add($item) }
+            $nextUrl = $restResult.nextLink
+        }
+        if ($restFailed) { continue }
+
+        if ($items.Count -eq 0) {
+            Write-Host " (no resources)"
             continue
         }
-        $rgStatus = Get-RgStatus -RgName $rgName
-        if ($rgStatus -eq "NotFound" -or $rgStatus -eq "Deleting") {
-            $orphanedResources.Add([PSCustomObject]@{
-                Name          = $r.name
-                Type          = $r.type
-                Location      = $r.location
-                ResourceGroup = $rgName
-                RgStatus      = $rgStatus
-                Id            = $r.id
-            })
+
+        # az resource list for comparison - may miss phantoms due to casing mismatch.
+        # Skip this RG if az resource list fails or parse fails: an empty baseline
+        # would flag every REST-visible resource as phantom (false positives).
+        $azListJson = az resource list -g $rgName -o json --only-show-errors 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host " (az resource list failed, skipped)"
+            $skippedRGs.Add("$rgName (az resource list)")
+            continue
         }
+        $azIds = @{}
+        try {
+            $azParsed = $azListJson | ConvertFrom-Json
+            foreach ($r in $azParsed) { $azIds[$r.id.ToLower()] = $true }
+        } catch {
+            Write-Warning "Failed to parse 'az resource list' for '$rgName'. Phantom detection skipped for this RG."
+            $skippedRGs.Add("$rgName (az resource list parse)")
+            continue
+        }
+
+        # Find phantoms: in direct REST but not in az resource list.
+        $rgPhantoms = 0
+        foreach ($r in $items) {
+            if (-not $azIds.ContainsKey($r.id.ToLower())) {
+                $allPhantoms.Add([PSCustomObject]@{
+                    Name          = $r.name
+                    Type          = $r.type
+                    Location      = $r.location
+                    ResourceGroup = $rgName
+                    RgStatus      = $rgState
+                    Id            = $r.id
+                })
+                $rgPhantoms++
+            }
+        }
+
+        $phantomNote = if ($rgPhantoms -gt 0) { " [$rgPhantoms PHANTOM]" } else { "" }
+        Write-Host " $($items.Count) resource(s)$phantomNote"
     }
 
-    if ($orphanedResources.Count -eq 0) {
-        Write-Host "No orphaned resources found (all resource groups active)." -ForegroundColor Green
-    } else {
-        Write-Host "=== Orphaned Resources (RG missing or in Deleting state) ===" -ForegroundColor Yellow
-        Write-Host "  Found $($orphanedResources.Count) orphaned resource(s):`n" -ForegroundColor Yellow
-        $orphanedResources | Format-Table Name, Type, Location, ResourceGroup, RgStatus -AutoSize
-        Write-Host "`n  Resource IDs:" -ForegroundColor Yellow
-        foreach ($o in $orphanedResources) {
-            Write-Host "    [$($o.RgStatus)] $($o.Id)"
+    Write-Host ""
+
+    # Report Deleting RGs
+    if ($deletingRGs.Count -gt 0) {
+        Write-Host "=== Resource Groups in Deleting State ===" -ForegroundColor Yellow
+        foreach ($rg in $deletingRGs) {
+            Write-Host "  [DELETING] $($rg.name) ($($rg.location))" -ForegroundColor Yellow
         }
+        Write-Host ""
     }
-    Write-Host "`nScan complete." -ForegroundColor Green
+
+    # Report phantom resources
+    if ($allPhantoms.Count -eq 0) {
+        Write-Host "No phantom resources found." -ForegroundColor Green
+    } else {
+        Write-Host "=== Phantom Resources (invisible to 'az resource list') ===" -ForegroundColor Yellow
+        Write-Host "  Found $($allPhantoms.Count) phantom resource(s):" -ForegroundColor Yellow
+        $allPhantoms | Format-Table Name, Type, Location, ResourceGroup, RgStatus -AutoSize
+        Write-Host "  Resource IDs:" -ForegroundColor Yellow
+        foreach ($p in $allPhantoms) {
+            Write-Host "    [$($p.RgStatus)] $($p.Id)"
+        }
+        Write-Host ""
+        Write-Host "  To delete via REST:" -ForegroundColor Cyan
+        Write-Host "    az rest --method DELETE --url 'https://management.azure.com/<full-resource-id>?api-version=...'" -ForegroundColor Cyan
+        Write-Host "    where <full-resource-id> starts with /subscriptions/..." -ForegroundColor Cyan
+    }
+
+    if ($skippedRGs.Count -gt 0) {
+        Write-Warning "Scan incomplete - the following RG(s) were skipped due to errors:"
+        foreach ($s in $skippedRGs) {
+            Write-Warning "  $s"
+        }
+        Write-Host "`nPartial scan complete. Scanned $scannedCount RG(s), skipped $($skippedRGs.Count)." -ForegroundColor Yellow
+        exit 2
+    }
+
+    Write-Host "`nScan complete. Scanned $scannedCount RG(s)." -ForegroundColor Green
     exit 0
 }
 
