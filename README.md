@@ -23,7 +23,7 @@
 ## VM Provisioning
 
 1. **create-spot-vms.ps1**: Creates Azure Spot VMs with any Linux image (Ubuntu by default). Supports full ARM64, dynamic Ubuntu image discovery, NAT Gateway, and custom images via `-ImagePublisher`/`-ImageOffer`/`-ImageSku` for any Linux distro. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
-1. **create-192core-vm.ps1**: Creates a 192-core Azure Spot VM. Auto-finds cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions. Shows progress indicator.
+1. **create-192core-vm.ps1**: Wrapper script that orchestrates vm-spot-price.py and create-spot-vms.ps1 to create a 192-core Azure Spot VM. Uses vm-spot-price.py to auto-find the cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions, then calls create-spot-vms.ps1 to provision the VM. Shows progress indicator. Supports `-WhatIf` for dry run.
 
 ## Infrastructure Management
 

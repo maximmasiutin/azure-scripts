@@ -303,6 +303,35 @@ Security Notes:
 
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
 
+    parser.add_argument(
+        "--access-tier",
+        choices=["hot", "cool", "cold", "archive"],
+        default=None,
+        help="Filter by blob access tier (hot, cool, cold, archive)",
+    )
+
+    parser.add_argument(
+        "--redundancy",
+        choices=["LRS", "ZRS", "GRS", "GZRS", "RA-GRS", "RA-GZRS"],
+        default=None,
+        help="Filter by redundancy type (e.g., LRS, ZRS, GRS)",
+    )
+
+    parser.add_argument(
+        "--estimate-monthly",
+        type=float,
+        default=None,
+        metavar="TB",
+        help="Show estimated monthly cost for specified TB of storage",
+    )
+
+    parser.add_argument(
+        "--currency",
+        type=str,
+        default=None,
+        help="Currency code for pricing (e.g., EUR, GBP). Default: USD",
+    )
+
     args = parser.parse_args()
 
     # Validate timeout
@@ -325,9 +354,23 @@ Security Notes:
         product_filter = " or ".join(
             f"productName eq '{blob_type}'" for blob_type in escaped_types
         )
-        params = {
-            "$filter": f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
-        }
+        api_filter = f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
+        if args.access_tier:
+            tier_map = {
+                "hot": "Hot",
+                "cool": "Cool",
+                "cold": "Cold",
+                "archive": "Archive",
+            }
+            api_filter += f" and contains(skuName, '{tier_map[args.access_tier]}')"
+        if args.redundancy:
+            api_filter += f" and contains(skuName, '{args.redundancy}')"
+        params = {"$filter": api_filter}
+        if args.currency:
+            if not args.currency.isalpha() or len(args.currency) != 3:
+                print("Error: Currency must be a 3-letter ISO 4217 code (e.g., EUR, GBP)", file=sys.stderr)
+                sys.exit(1)
+            params["currencyCode"] = args.currency
     except Exception as e:
         print(f"Error building API filter: {e}", file=sys.stderr)
         sys.exit(1)
@@ -457,26 +500,45 @@ def format_output(
     region_avg_prices: List[Tuple[str, float]],
     excluded_regions: Set[str],
     output_format: str,
+    estimate_tb: Optional[float] = None,
+    currency: Optional[str] = None,
 ) -> None:
     """Format and print the results in the specified format."""
+    currency_label = currency if currency else "USD"
 
     if output_format == "json":
         # JSON output
-        result = {
-            "blob_types": blob_types,
-            "region_prices": [
+        if estimate_tb is not None:
+            region_data = [
+                {
+                    "region": region,
+                    "avg_price": price,
+                    "monthly_estimate": round(price * estimate_tb * 1024, 2),
+                }
+                for region, price in region_avg_prices
+            ]
+        else:
+            region_data = [
                 {"region": region, "avg_price": price}
                 for region, price in region_avg_prices
-            ],
+            ]
+        result = {
+            "blob_types": blob_types,
+            "region_prices": region_data,
             "excluded_regions": list(excluded_regions),
         }
         print(json.dumps(result, indent=2))
 
     elif output_format == "csv":
         # CSV output
-        print("Region,Average_Price_USD")
-        for region, price in region_avg_prices:
-            print(f"{region},{price:.6f}")
+        if estimate_tb is not None:
+            print(f"Region,Average_Price_{currency_label},Monthly_Estimate_{estimate_tb}TB")
+            for region, price in region_avg_prices:
+                print(f"{region},{price:.6f},{price * estimate_tb * 1024:.2f}")
+        else:
+            print(f"Region,Average_Price_{currency_label}")
+            for region, price in region_avg_prices:
+                print(f"{region},{price:.6f}")
 
     else:
         # Table output (default)
@@ -493,10 +555,17 @@ def format_output(
             else f"Blob storage service ({blob_types[0]}) price per region"
         )
         print("\n" + table_caption)
-        headers = ["Region", "Average Price (USD)"]
-        formatted_data = [
-            (region, f"{price:.6f}") for region, price in region_avg_prices
-        ]
+        if estimate_tb is not None:
+            headers = ["Region", f"Avg Price/GB ({currency_label})", f"Est. {currency_label}/Month ({estimate_tb} TB)"]
+            formatted_data = [
+                (region, f"{price:.6f}", f"{price * estimate_tb * 1024:.2f}")
+                for region, price in region_avg_prices
+            ]
+        else:
+            headers = ["Region", f"Average Price ({currency_label})"]
+            formatted_data = [
+                (region, f"{price:.6f}") for region, price in region_avg_prices
+            ]
         print(tabulate(formatted_data, headers=headers, tablefmt="psql"))
 
 
@@ -545,7 +614,9 @@ def main() -> None:
 
         # Output results
         format_output(
-            blob_types, region_avg_prices, excluded_regions, args.output_format
+            blob_types, region_avg_prices, excluded_regions, args.output_format,
+            estimate_tb=args.estimate_monthly,
+            currency=args.currency,
         )
 
     except KeyboardInterrupt:
