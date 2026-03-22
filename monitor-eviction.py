@@ -29,6 +29,7 @@ from os import path, access, X_OK
 from platform import uname, node, system
 from subprocess import run
 from sys import stderr, exit
+from datetime import datetime, timezone
 from time import sleep
 from urllib.parse import urlparse
 
@@ -182,7 +183,12 @@ def is_valid_service_name(service_name):
 
 
 def parse_args():
-    parser = ArgumentParser(description="Monitor Azure spot VM eviction events.")
+    parser = ArgumentParser(
+        description="Monitor Azure Spot VM eviction events. "
+        "Spot VMs can be evicted with ~30 seconds notice when Azure needs capacity. "
+        "This script polls the Instance Metadata Service for scheduled events "
+        "and executes hooks/stops services before the VM is deallocated.",
+    )
     parser.add_argument(
         "--stop-services",
         type=str,
@@ -200,6 +206,18 @@ def parse_args():
         "--dry-run",
         action="store_true",
         help="Show what would be done without executing.",
+    )
+    parser.add_argument(
+        "--poll-interval",
+        type=int,
+        default=1,
+        help="Seconds between metadata service polls (default: 1, range: 1-30)",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Write eviction events to a log file in addition to stdout",
     )
     args = parser.parse_args()
 
@@ -224,11 +242,16 @@ def parse_args():
         except ValueError as e:
             parser.error(f"Hook validation failed: {e}")
 
-    return ret_services, ret_hook, ret_skip_azure_check, ret_dry_run
+    ret_poll_interval = args.poll_interval
+    if ret_poll_interval < 1 or ret_poll_interval > 30:
+        parser.error("--poll-interval must be between 1 and 30")
+    ret_log_file = args.log_file
+
+    return ret_services, ret_hook, ret_skip_azure_check, ret_dry_run, ret_poll_interval, ret_log_file
 
 
 if __name__ == "__main__":
-    services, hook, skip_azure_check, dry_run = parse_args()
+    services, hook, skip_azure_check, dry_run, poll_interval, log_file = parse_args()
 
     if not skip_azure_check:
         if system().lower() == "windows":
@@ -269,6 +292,7 @@ if __name__ == "__main__":
     if dry_run:
         print("DRY RUN MODE - No actual actions will be performed")
         print(f"Would monitor computer: {myComputer}")
+        print(f"Poll interval: {poll_interval}s")
         if services:
             print(f"Would stop services: {', '.join(services)}")
         if hook:
@@ -276,10 +300,19 @@ if __name__ == "__main__":
         exit(0)
 
     print(f"Monitoring eviction events for computer: {myComputer}")
+    print(f"Poll interval: {poll_interval}s")
     if services:
         print(f"Will stop services: {', '.join(services)}")
     if hook:
         print(f"Will execute hook: {hook}")
+
+    log_fh = None
+    if log_file:
+        try:
+            log_fh = open(log_file, "a", encoding="utf-8")
+            print(f"Logging to: {log_file}")
+        except IOError as e:
+            print(f"Warning: Cannot open log file {log_file}: {e}", file=stderr)
 
     continueLoop = True
     error_count = 0
@@ -315,11 +348,24 @@ if __name__ == "__main__":
                     and myComputer in resources
                 ):
                     print(f"Handling eviction signal: {eventType}")
+                    if log_fh:
+                        try:
+                            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                            log_fh.write(f"{ts} EVICTION {eventType} {eventStatus} {myComputer}\n")
+                            log_fh.flush()
+                        except Exception as log_err:
+                            print(f"Warning: Failed to write to log file: {log_err}", file=stderr)
                     eviction_action(services, hook)
                     continueLoop = False
                     break
 
         if continueLoop:
-            sleep(1)
+            sleep(poll_interval)
+
+    if log_fh:
+        try:
+            log_fh.close()
+        except Exception:
+            pass
 
     print("Eviction monitoring completed")

@@ -139,6 +139,30 @@ def create_resilient_session():
     return session
 
 
+def apply_common_filters(query: str, args: Any) -> str:
+    """Apply dedup-meters and region filters common to all query modes."""
+    if args.region:
+        regions = [r.strip() for r in args.region.split(",") if r.strip()]
+        if len(regions) == 1:
+            query += f" and armRegionName eq '{regions[0]}'"
+        elif len(regions) > 1:
+            region_filter = " or ".join(
+                [f"armRegionName eq '{r}'" for r in regions]
+            )
+            query += f" and ({region_filter})"
+    if args.dedup_meters:
+        query += " and isPrimaryMeterRegion eq true"
+    return query
+
+
+def build_api_params(query: str, args: Any) -> Dict[str, str]:
+    """Build API params dict with filter and optional currency."""
+    params: Dict[str, str] = {"$filter": query}
+    if args.currency:
+        params["currencyCode"] = args.currency
+    return params
+
+
 @rate_limit(calls_per_second=2)
 def fetch_pricing_data(
     api_url: str, params: Dict[str, str], session: Session, verbose: bool = False
@@ -1234,8 +1258,33 @@ def main() -> None:
         "Windows VMs typically cost 8-15%% more due to OS license fees. "
         "Uses 'productName contains Windows' filter for accurate results.",
     )
+    parser.add_argument(
+        "--estimate-monthly",
+        action="store_true",
+        help="Show estimated monthly cost (retail price * 730 hours/month)",
+    )
+    parser.add_argument(
+        "--currency",
+        type=str,
+        default=None,
+        help="Currency code for pricing (e.g., EUR, GBP, JPY). Default: USD",
+    )
+    parser.add_argument(
+        "--dedup-meters",
+        action="store_true",
+        help="Filter to isPrimaryMeterRegion=true to avoid duplicate regional meters",
+    )
 
     args: Namespace = parser.parse_args()
+
+    # Validate currency code
+    if args.currency:
+        if not re.match(r"^[A-Z]{3}$", args.currency):
+            logging.error("Currency must be a 3-letter ISO 4217 code (e.g., EUR, GBP, JPY)")
+            sys.exit(1)
+
+    # Derive currency label for output headers
+    currency_symbol = args.currency if args.currency else "USD"
 
     # Validate CPU vendor flags
     only_flags = [
@@ -1497,16 +1546,7 @@ def main() -> None:
                 )
                 if not non_spot:
                     query += SPOT_FILTER_CLAUSE
-                # Add region filter if specified
-                if args.region:
-                    regions = [r.strip() for r in args.region.split(",") if r.strip()]
-                    if len(regions) == 1:
-                        query += f" and armRegionName eq '{regions[0]}'"
-                    elif len(regions) > 1:
-                        region_filter = " or ".join(
-                            [f"armRegionName eq '{r}'" for r in regions]
-                        )
-                        query += f" and ({region_filter})"
+                query = apply_common_filters(query, args)
 
                 logging.debug(f"Query: {query}")
 
@@ -1517,8 +1557,9 @@ def main() -> None:
                     sys.exit(0)
 
                 page_start = time.time()
+                params = build_api_params(query, args)
                 json_data = fetch_pricing_data(
-                    api_url, {"$filter": query}, session, verbose=args.verbose
+                    api_url, params, session, verbose=args.verbose
                 )
                 PAGE_ESTIMATOR.record_page(time.time() - page_start)
                 items = json_data.get("Items", [])
@@ -1586,15 +1627,7 @@ def main() -> None:
                         query += f" and productName eq 'Virtual Machines {series_name} Series'"
                         if not non_spot:
                             query += SPOT_FILTER_CLAUSE
-                        if args.region:
-                            regions = [r.strip() for r in args.region.split(",") if r.strip()]
-                            if len(regions) == 1:
-                                query += f" and armRegionName eq '{regions[0]}'"
-                            elif len(regions) > 1:
-                                region_filter = " or ".join(
-                                    [f"armRegionName eq '{r}'" for r in regions]
-                                )
-                                query += f" and ({region_filter})"
+                        query = apply_common_filters(query, args)
                         print(f"\n  [{series_name}] Filter: {query}")
                     sys.exit(0)
 
@@ -1614,25 +1647,15 @@ def main() -> None:
                     query += f" and productName eq 'Virtual Machines {series_name} Series'"
                     if not non_spot:
                         query += SPOT_FILTER_CLAUSE
-                    # Add region filter if specified
-                    if args.region:
-                        regions = [
-                            r.strip() for r in args.region.split(",") if r.strip()
-                        ]
-                        if len(regions) == 1:
-                            query += f" and armRegionName eq '{regions[0]}'"
-                        elif len(regions) > 1:
-                            region_filter = " or ".join(
-                                [f"armRegionName eq '{r}'" for r in regions]
-                            )
-                            query += f" and ({region_filter})"
+                    query = apply_common_filters(query, args)
 
                     logging.debug(f"[{idx + 1}/{len(series_list)}] {series_name}: {query}")
 
                     try:
                         page_start = time.time()
+                        params = build_api_params(query, args)
                         json_data = fetch_pricing_data(
-                            api_url, {"$filter": query}, session, verbose=args.verbose
+                            api_url, params, session, verbose=args.verbose
                         )
                         PAGE_ESTIMATOR.record_page(time.time() - page_start)
                     except Exception as e:
@@ -1717,6 +1740,8 @@ def main() -> None:
                     "price": best_price,
                     "unit": best_unit,
                 }
+                if args.estimate_monthly:
+                    result["monthlyEstimate"] = round(best_price * 730, 2)
                 print(json.dumps(result))
             else:
                 print(f"{best_region} {best_vm_size} {best_price} {best_unit}")
@@ -1727,7 +1752,9 @@ def main() -> None:
             top_label = f"Top {args.top}" if args.top > 0 else "All"
             print(f"{top_label} cheapest per-core options:\n")
 
-            headers = ["SKU", "$/Hour", "$/Core/Hr", "Cores", "Region"]
+            headers = ["SKU", f"{currency_symbol}/Hour", f"{currency_symbol}/Core/Hr", "Cores", "Region"]
+            if args.estimate_monthly:
+                headers.insert(2, f"{currency_symbol}/Month")
             display_data = []
             seen = set()  # Deduplicate by SKU+region
             for row in per_core_data:
@@ -1735,15 +1762,16 @@ def main() -> None:
                 if key in seen:
                     continue
                 seen.add(key)
-                display_data.append(
-                    [
-                        row[0],  # SKU
-                        f"{row[1]:.6f}",  # Price (6 decimals for very low prices)
-                        f"{row[2]:.7f}",  # Price per core (7 decimals)
-                        row[3],  # Cores
-                        row[5],  # Region
-                    ]
-                )
+                entry = [
+                    row[0],  # SKU
+                    f"{row[1]:.6f}",  # Price (6 decimals for very low prices)
+                    f"{row[2]:.7f}",  # Price per core (7 decimals)
+                    row[3],  # Cores
+                    row[5],  # Region
+                ]
+                if args.estimate_monthly:
+                    entry.insert(2, f"{row[1] * 730:.2f}")
+                display_data.append(entry)
                 if args.top > 0 and len(display_data) >= args.top:
                     break
 
@@ -1782,16 +1810,7 @@ def main() -> None:
             query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
             if not non_spot:
                 query += SPOT_FILTER_CLAUSE
-            # Add region filter if specified
-            if args.region:
-                regions = [r.strip() for r in args.region.split(",") if r.strip()]
-                if len(regions) == 1:
-                    query += f" and armRegionName eq '{regions[0]}'"
-                elif len(regions) > 1:
-                    region_filter = " or ".join(
-                        [f"armRegionName eq '{r}'" for r in regions]
-                    )
-                    query += f" and ({region_filter})"
+            query = apply_common_filters(query, args)
 
             logging.debug(f"Query: {query}")
 
@@ -1802,8 +1821,9 @@ def main() -> None:
                 sys.exit(0)
 
             page_start = time.time()
+            params = build_api_params(query, args)
             json_data = fetch_pricing_data(
-                api_url, {"$filter": query}, session, verbose=args.verbose
+                api_url, params, session, verbose=args.verbose
             )
             PAGE_ESTIMATOR.record_page(time.time() - page_start)
             items = json_data.get("Items", [])
@@ -1929,6 +1949,8 @@ def main() -> None:
                     "price": best_price,
                     "unit": best_unit,
                 }
+                if args.estimate_monthly:
+                    result["monthlyEstimate"] = round(best_price * 730, 2)
                 print(json.dumps(result))
             else:
                 print(f"{best_region} {best_vm_size} {best_price} {best_unit}")
@@ -1947,9 +1969,16 @@ def main() -> None:
                 "Meter",
                 "Product Name",
             ]
+            if args.estimate_monthly:
+                headers.insert(2, f"{currency_symbol}/Month")
             display_data = all_series_data
             if args.top > 0:
                 display_data = all_series_data[: args.top]
+            if args.estimate_monthly:
+                display_data = [
+                    row[:2] + [f"{float(row[1]) * 730:.2f}"] + row[2:]
+                    for row in display_data
+                ]
             print(tabulate(display_data, headers=headers, tablefmt="psql"))
         sys.exit(0)
 
@@ -2060,17 +2089,6 @@ def main() -> None:
             if not non_spot:
                 query += SPOT_FILTER_CLAUSE
 
-            # Add region filter if specified
-            if args.region:
-                regions = [r.strip() for r in args.region.split(",") if r.strip()]
-                if len(regions) == 1:
-                    query += f" and armRegionName eq '{regions[0]}'"
-                elif len(regions) > 1:
-                    region_filter = " or ".join(
-                        [f"armRegionName eq '{r}'" for r in regions]
-                    )
-                    query += f" and ({region_filter})"
-
             # Skip productName filter when using --vm-sizes: armSkuName already
             # uniquely identifies the VM, and the series name casing may not match
             # Azure's productName (e.g. Fsv2 vs FSv2). Windows/Linux filtering
@@ -2095,12 +2113,15 @@ def main() -> None:
                             f"ARM VM detected ({sku}), skipping productName filter (client-side Windows filter)"
                         )
 
+            query = apply_common_filters(query, args)
+
             logging.debug(f"Query: {query}")
 
             # Initial request
             page_start = time.time()
+            params = build_api_params(query, args)
             json_data = fetch_pricing_data(
-                api_url, {"$filter": query}, session, verbose=args.verbose
+                api_url, params, session, verbose=args.verbose
             )
             PAGE_ESTIMATOR.record_page(time.time() - page_start)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
@@ -2205,6 +2226,8 @@ def main() -> None:
                     "price": price,
                     "unit": unit,
                 }
+                if args.estimate_monthly:
+                    result["monthlyEstimate"] = round(price * 730, 2)
                 print(json.dumps(result))
             else:
                 # Output format: region vmsize price unit (space-separated)

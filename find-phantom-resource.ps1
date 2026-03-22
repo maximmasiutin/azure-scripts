@@ -29,6 +29,15 @@
       - Phantom resources: visible via ARM REST but invisible to az resource list
       - Deleting RGs: resource groups stuck in the Deleting state
 
+    With -OrphanScan: uses Azure Resource Graph (KQL) for efficient
+    cross-subscription detection of orphaned resources:
+      - Unattached managed disks, old snapshots, unused images
+      - Orphaned NICs, public IPs, NSGs, route tables
+      - Empty availability sets, load balancers with no backends
+      - App Service Plans with no apps, orphaned NAT gateways
+      - Orphaned private DNS zones, private endpoints
+      - Azure Advisor cost recommendations
+
     This catches the same class of phantom resources as the single-RG mode but
     across the entire subscription. The -Region filter restricts which RGs are
     scanned (by RG location). Resources in the target region whose RG is located
@@ -104,6 +113,18 @@
     Scans all RGs in the subscription for phantom resources. Use when the
     target resource may be in a region that differs from its RG location.
 
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -OrphanScan
+
+    Uses Azure Resource Graph to find orphaned resources across the entire
+    subscription: unattached disks, orphaned NICs, empty availability sets,
+    App Service Plans with no apps, old snapshots, and more.
+
+.EXAMPLE
+    pwsh find-phantom-resource.ps1 -OrphanScan -SnapshotAgeDays 90
+
+    Same as -OrphanScan but only flags snapshots older than 90 days.
+
 .NOTES
     Requires: Azure CLI (az) authenticated and with an active subscription.
 #>
@@ -128,16 +149,32 @@ param(
     [switch]$Force,
 
     [Parameter(HelpMessage="Also delete the resource group after cleaning phantom resources")]
-    [switch]$DeleteResourceGroup
+    [switch]$DeleteResourceGroup,
+
+    [Parameter(HelpMessage="Use Azure Resource Graph for efficient orphaned resource detection across subscription")]
+    [switch]$OrphanScan,
+
+    [Parameter(HelpMessage="Age threshold in days for snapshot orphan detection (default: 30)")]
+    [int]$SnapshotAgeDays = 30
 )
 
+# Validate SnapshotAgeDays
+if ($SnapshotAgeDays -lt 1) {
+    Write-Host "ERROR: -SnapshotAgeDays must be at least 1." -ForegroundColor Red
+    exit 1
+}
+
 # Validate parameter combinations
+if ($OrphanScan -and ($SubScan -or $ResourceGroup)) {
+    Write-Host "ERROR: -OrphanScan cannot be combined with -SubScan or -ResourceGroup." -ForegroundColor Red
+    exit 1
+}
 if ($SubScan -and $ResourceGroup) {
     Write-Host "ERROR: -SubScan and -ResourceGroup are mutually exclusive." -ForegroundColor Red
     exit 1
 }
-if (-not $SubScan -and -not $ResourceGroup) {
-    Write-Host "ERROR: Provide -ResourceGroup <name> or -SubScan." -ForegroundColor Red
+if (-not $SubScan -and -not $ResourceGroup -and -not $OrphanScan) {
+    Write-Host "ERROR: Provide -ResourceGroup <name>, -SubScan, or -OrphanScan." -ForegroundColor Red
     exit 1
 }
 if ($SubScan -and ($Delete -or $DeleteResourceGroup)) {
@@ -172,18 +209,22 @@ $neverDeleteTypes = @(
     "Microsoft.Web/sites",
     "Microsoft.Web/serverFarms",
     "Microsoft.CognitiveServices/accounts",
-    "Microsoft.MachineLearningServices/workspaces"
+    "Microsoft.MachineLearningServices/workspaces",
+    "Microsoft.Compute/snapshots",
+    "Microsoft.Compute/images"
 )
 
 # Resource types that are safe to delete when orphaned
 $safeDeleteTypes = @(
     "Microsoft.Compute/disks",
+    "Microsoft.Compute/availabilitySets",
     "Microsoft.Network/networkInterfaces",
     "Microsoft.Network/publicIPAddresses",
     "Microsoft.Network/virtualNetworks",
     "Microsoft.Network/networkSecurityGroups",
     "Microsoft.Network/routeTables",
     "Microsoft.Network/loadBalancers",
+    "Microsoft.Network/natGateways",
     "Microsoft.Network/privateDnsZones",
     "Microsoft.Network/privateEndpoints"
 )
@@ -351,11 +392,220 @@ function Test-ResourceOrphaned {
             }
             return $false
         }
+        "Microsoft.Compute/snapshots" {
+            $snap = Invoke-AzRest -Url "${ResourceId}?api-version=2024-03-02"
+            if ($null -ne $snap) {
+                # Snapshot is orphaned if its source disk no longer exists
+                $sourceId = $snap.properties.creationData.sourceResourceId
+                if ([string]::IsNullOrWhiteSpace($sourceId)) {
+                    return $true
+                }
+                $sourceCheck = Invoke-AzRest -Url "${sourceId}?api-version=2024-03-02"
+                if ($null -eq $sourceCheck) {
+                    return $true  # Source disk no longer exists
+                }
+                # Also consider old snapshots (>$SnapshotAgeDays days) as candidates
+                $timeCreated = $snap.properties.timeCreated
+                if ($null -ne $timeCreated) {
+                    try {
+                        $created = [datetime]::Parse($timeCreated)
+                        if ($created -lt (Get-Date).AddDays(-$SnapshotAgeDays)) {
+                            return $true
+                        }
+                    } catch { }
+                }
+            }
+            return $false
+        }
+        "Microsoft.Compute/availabilitySets" {
+            $avset = Invoke-AzRest -Url "${ResourceId}?api-version=2024-07-01"
+            if ($null -ne $avset) {
+                $vms = $avset.properties.virtualMachines
+                if ($null -eq $vms -or $vms.Count -eq 0) {
+                    return $true
+                }
+            }
+            return $false
+        }
+        "Microsoft.Compute/images" {
+            # Custom VM images are orphaned if no VM references them
+            # Since there is no direct back-reference, mark as orphaned only
+            # if the source VM no longer exists
+            $img = Invoke-AzRest -Url "${ResourceId}?api-version=2024-07-01"
+            if ($null -ne $img) {
+                $sourceVm = $img.properties.sourceVirtualMachine
+                if ($null -ne $sourceVm -and -not [string]::IsNullOrWhiteSpace($sourceVm.id)) {
+                    $vmCheck = Invoke-AzRest -Url "$($sourceVm.id)?api-version=2024-07-01"
+                    if ($null -eq $vmCheck) {
+                        return $true  # Source VM no longer exists
+                    }
+                }
+            }
+            return $false
+        }
+        "Microsoft.Network/natGateways" {
+            $natgw = Invoke-AzRest -Url "${ResourceId}?api-version=2024-01-01"
+            if ($null -ne $natgw) {
+                $subnets = $natgw.properties.subnets
+                if ($null -eq $subnets -or $subnets.Count -eq 0) {
+                    return $true
+                }
+            }
+            return $false
+        }
         default {
             # Unknown type in safe-delete list: do NOT assume orphaned
             return $false
         }
     }
+}
+
+# ============================================================
+# ORPHANSCAN MODE: Azure Resource Graph orphaned resource scan
+# ============================================================
+if ($OrphanScan) {
+    Write-Host "Orphaned Resource Scan via Azure Resource Graph" -ForegroundColor Cyan
+    Write-Host "Requires: az extension 'resource-graph' (install with: az extension add --name resource-graph)`n"
+
+    # Verify resource-graph extension
+    $extCheck = az extension show --name resource-graph 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Installing resource-graph extension..." -ForegroundColor Yellow
+        az extension add --name resource-graph --only-show-errors
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Failed to install resource-graph extension." -ForegroundColor Red
+            exit 1
+        }
+    }
+
+    $queries = [ordered]@{
+        "Unattached Managed Disks" = @"
+Resources
+| where type =~ 'microsoft.compute/disks'
+| where isempty(managedBy)
+| extend diskState = tostring(properties.diskState)
+| where diskState == 'Unattached'
+| project name, resourceGroup, location, diskSizeGb=properties.diskSizeGB, sku=sku.name, subscriptionId
+"@
+        "Orphaned Network Interfaces" = @"
+Resources
+| where type =~ 'microsoft.network/networkinterfaces'
+| where isempty(properties.virtualMachine)
+| where isempty(properties.privateEndpoint)
+| project name, resourceGroup, location, subscriptionId
+"@
+        "Unassociated Public IPs" = @"
+Resources
+| where type =~ 'microsoft.network/publicipaddresses'
+| where isempty(properties.ipConfiguration)
+| where isempty(properties.natGateway)
+| project name, resourceGroup, location, sku=sku.name, ipAddress=properties.ipAddress, subscriptionId
+"@
+        "Unassociated NSGs" = @"
+Resources
+| where type =~ 'microsoft.network/networksecuritygroups'
+| where isnull(properties.networkInterfaces) or array_length(properties.networkInterfaces) == 0
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| project name, resourceGroup, location, subscriptionId
+"@
+        "Load Balancers with No Backend" = @"
+Resources
+| where type =~ 'microsoft.network/loadbalancers'
+| where array_length(properties.backendAddressPools) == 0
+| project name, resourceGroup, location, sku=sku.name, subscriptionId
+"@
+        "Empty Availability Sets" = @"
+Resources
+| where type =~ 'microsoft.compute/availabilitysets'
+| where array_length(properties.virtualMachines) == 0
+| project name, resourceGroup, location, subscriptionId
+"@
+        "App Service Plans with No Apps" = @"
+Resources
+| where type =~ 'microsoft.web/serverfarms'
+| where properties.numberOfSites == 0
+| project name, resourceGroup, location, sku=sku.name, tier=sku.tier, subscriptionId
+"@
+        "Unassociated Route Tables" = @"
+Resources
+| where type =~ 'microsoft.network/routetables'
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| project name, resourceGroup, location, subscriptionId
+"@
+        "Orphaned Snapshots (>$SnapshotAgeDays days)" = @"
+Resources
+| where type =~ 'microsoft.compute/snapshots'
+| extend timeCreated = todatetime(properties.timeCreated)
+| where timeCreated < ago(${SnapshotAgeDays}d)
+| project name, resourceGroup, location, diskSizeGb=properties.diskSizeGB, timeCreated, subscriptionId
+"@
+        "Orphaned NAT Gateways" = @"
+Resources
+| where type =~ 'microsoft.network/natgateways'
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| project name, resourceGroup, location, subscriptionId
+"@
+        "Orphaned Private DNS Zones" = @"
+Resources
+| where type =~ 'microsoft.network/privatednszones'
+| where properties.numberOfVirtualNetworkLinks == 0
+| project name, resourceGroup, location, subscriptionId
+"@
+        "Advisor Cost Recommendations" = @"
+AdvisorResources
+| where properties.category == 'Cost'
+| project name, impact=properties.impact, description=properties.shortDescription.solution, resourceId=properties.resourceMetadata.resourceId
+"@
+    }
+
+    $totalOrphans = 0
+    foreach ($queryName in $queries.Keys) {
+        Write-Host "`n=== $queryName ===" -ForegroundColor Cyan
+        $kql = $queries[$queryName]
+        try {
+            $allData = [System.Collections.Generic.List[object]]::new()
+            $skipToken = $null
+            $pageNum = 0
+            $maxPages = 10  # Safety limit
+
+            do {
+                $pageNum++
+                $graphArgs = @("graph", "query", "-q", $kql, "--first", "200", "-o", "json", "--only-show-errors")
+                if ($skipToken) {
+                    $graphArgs += @("--skip-token", $skipToken)
+                }
+                $resultJson = & az @graphArgs 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Host "  Query failed: $resultJson" -ForegroundColor Red
+                    break
+                }
+                $result = $resultJson | ConvertFrom-Json
+                if ($null -ne $result.data) {
+                    foreach ($item in $result.data) { $allData.Add($item) }
+                }
+                $skipToken = $result.'$skipToken'
+            } while ($skipToken -and $pageNum -lt $maxPages)
+
+            if ($allData.Count -gt 0) {
+                $totalOrphans += $allData.Count
+                Write-Host "  Found $($allData.Count) orphaned resource(s):" -ForegroundColor Yellow
+                $allData | Format-Table -AutoSize
+            } else {
+                Write-Host "  None found." -ForegroundColor Green
+            }
+        } catch {
+            Write-Host "  Error: $_" -ForegroundColor Red
+        }
+    }
+
+    Write-Host "`n=============================================" -ForegroundColor Cyan
+    if ($totalOrphans -gt 0) {
+        Write-Host "Total orphaned resources found: $totalOrphans" -ForegroundColor Yellow
+        Write-Host "Review each category above before deleting." -ForegroundColor Yellow
+    } else {
+        Write-Host "No orphaned resources found." -ForegroundColor Green
+    }
+    exit 0
 }
 
 # ============================================================
@@ -741,9 +991,13 @@ if ($DryRun -or $Delete) {
             # Delete in dependency order: NICs before VNets, disks anytime
             $deleteOrder = @(
                 "Microsoft.Compute/disks",
+                "Microsoft.Compute/snapshots",
+                "Microsoft.Compute/images",
+                "Microsoft.Compute/availabilitySets",
                 "Microsoft.Network/networkInterfaces",
                 "Microsoft.Network/publicIPAddresses",
                 "Microsoft.Network/loadBalancers",
+                "Microsoft.Network/natGateways",
                 "Microsoft.Network/privateEndpoints",
                 "Microsoft.Network/privateDnsZones",
                 "Microsoft.Network/networkSecurityGroups",
