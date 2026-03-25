@@ -131,9 +131,7 @@ def create_resilient_session():
         backoff_factor=1,
         status_forcelist=[429, 500, 502, 503, 504],
     )
-    adapter = HTTPAdapter(
-        max_retries=retry_strategy, pool_connections=10, pool_maxsize=10
-    )
+    adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
@@ -146,9 +144,7 @@ def apply_common_filters(query: str, args: Any) -> str:
         if len(regions) == 1:
             query += f" and armRegionName eq '{regions[0]}'"
         elif len(regions) > 1:
-            region_filter = " or ".join(
-                [f"armRegionName eq '{r}'" for r in regions]
-            )
+            region_filter = " or ".join([f"armRegionName eq '{r}'" for r in regions])
             query += f" and ({region_filter})"
     if args.dedup_meters:
         query += " and isPrimaryMeterRegion eq true"
@@ -399,9 +395,7 @@ class PageEstimator:
         minutes = int((eta_seconds % 3600) // 60)
         return f"{hours}h{minutes:02d}m"
 
-    def format_progress(
-        self, current_page: int, total_pages: int, prefix: str = "Fetching"
-    ) -> str:
+    def format_progress(self, current_page: int, total_pages: int, prefix: str = "Fetching") -> str:
         """Format progress string with page count and ETA."""
         eta = self.get_eta_str(current_page, total_pages)
         return f"{prefix} page {current_page}/{total_pages} (ETA: {eta})"
@@ -426,7 +420,7 @@ def extract_series_from_vm_size(vm_size: str) -> str:
         B4ls_v2 -> Blsv2
     """
     # Remove leading Standard_ if present
-    vm_size = vm_size.replace("Standard_", "")
+    vm_size = vm_size.removeprefix("Standard_")
     # Remove numeric part (the vCPU count)
     # Pattern: letter(s) + digits + rest
     match = re.match(r"^([A-Za-z]+)(\d+)(.*)$", vm_size)
@@ -449,7 +443,7 @@ def extract_cores_from_sku(sku_name: str) -> int:
         Standard_E96as_v5 -> 96
     """
     # Remove Standard_ prefix if present
-    sku_name = sku_name.replace("Standard_", "")
+    sku_name = sku_name.removeprefix("Standard_")
     # Pattern: letter(s) + digits (the core count)
     match = re.match(r"^[A-Za-z]+(\d+)", sku_name)
     if match:
@@ -465,7 +459,7 @@ def is_burstable_vm(sku_name: str) -> bool:
         Standard_D4pls_v5 -> False
     """
     # Remove Standard_ prefix if present
-    sku_name = sku_name.replace("Standard_", "")
+    sku_name = sku_name.removeprefix("Standard_")
     # B-series VMs start with 'B'
     return sku_name.upper().startswith("B")
 
@@ -484,7 +478,7 @@ def is_arm_vm(sku_name: str) -> bool:
         Dplsv6 -> True (series name)
     """
     # Remove Standard_ prefix if present
-    sku_name = sku_name.replace("Standard_", "")
+    sku_name = sku_name.removeprefix("Standard_")
     # ARM VMs have 'p' after the first letter(s) and before 's' or 'l'
     # Pattern: letter(s) + digits + 'p' + optional 'l/d' + 's'
     # Or for series names: letter(s) + 'p' + optional letters + 'v' + digit
@@ -514,7 +508,7 @@ def is_amd_vm(sku_name: str) -> bool:
         Dasv5 -> True (series name)
         Famsv6 -> True (series name, AMD high memory)
     """
-    sku_name = sku_name.replace("Standard_", "")
+    sku_name = sku_name.removeprefix("Standard_")
     amd_patterns = [
         r"^[A-Za-z]+\d+(?:-\d+)?a[ldms]*_v\d+",  # SKU: D4as_v5, E64-16as_v7
         r"^[A-Za-z]+\d+(?:-\d+)?a[ldms]*_[A-Za-z]",  # SKU with suffix: NV72ads_A10_v5
@@ -943,11 +937,7 @@ VM_SERIES_SPECIALTY = (
 )
 
 # Complete catalog: every known series
-VM_SERIES_ALL = (
-    VM_SERIES_BURSTABLE
-    + VM_SERIES_NON_BURSTABLE
-    + VM_SERIES_SPECIALTY
-)
+VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE + VM_SERIES_SPECIALTY
 
 # Latest generation only (v6/v7) - for fast queries
 VM_SERIES_LATEST = (
@@ -1025,7 +1015,7 @@ def _process_per_core_item(
 
         # Filter for general-compute: only D and F series (non-burstable)
         if getattr(args, "general_compute", False):
-            sku_upper = arm_sku_name.replace("Standard_", "").upper()
+            sku_upper = arm_sku_name.removeprefix("Standard_").upper()
             # Only allow D-series and F-series (general purpose + compute optimized)
             if not (sku_upper.startswith("D") or sku_upper.startswith("F")):
                 return
@@ -1038,7 +1028,7 @@ def _process_per_core_item(
             return
 
         # Filter excluded VM sizes
-        normalized_sku = arm_sku_name.replace("Standard_", "").lower()
+        normalized_sku = arm_sku_name.removeprefix("Standard_").lower()
         if normalized_sku in excluded_vm_sizes:
             return
 
@@ -1068,9 +1058,7 @@ def _process_per_core_item(
 
 def main() -> None:
     """Main entry point for Azure VM spot price finder."""
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
     table_data: List[List[Any]] = []
     parser: ArgumentParser = ArgumentParser(description="Get Azure VM spot prices")
@@ -1098,9 +1086,7 @@ def main() -> None:
         help="Comma-separated VM sizes (e.g., D4pls_v5,D4ps_v5). "
         "Overrides --sku-pattern and --series-pattern",
     )
-    parser.add_argument(
-        "--non-spot", action="store_true", help="Only return non-spot instances"
-    )
+    parser.add_argument("--non-spot", action="store_true", help="Only return non-spot instances")
     parser.add_argument(
         "--low-priority",
         action="store_true",
@@ -1150,9 +1136,7 @@ def main() -> None:
         help="Output format (default: %(default)s)",
     )
     parser.add_argument("--output-file", help="Save output to file instead of stdout")
-    parser.add_argument(
-        "--dry-run", action="store_true", help="Show API query without executing"
-    )
+    parser.add_argument("--dry-run", action="store_true", help="Show API query without executing")
     parser.add_argument(
         "--validate-config", action="store_true", help="Validate configuration and exit"
     )
@@ -1294,9 +1278,7 @@ def main() -> None:
     ]
     active_only = [name for name, val in only_flags if val]
     if len(active_only) > 1:
-        logging.error(
-            f"Cannot specify multiple --*-only flags: {', '.join(active_only)}"
-        )
+        logging.error(f"Cannot specify multiple --*-only flags: {', '.join(active_only)}")
         sys.exit(1)
     if getattr(args, "intel_only", False) and getattr(args, "exclude_intel", False):
         logging.error("Cannot specify both --intel-only and --exclude-intel")
@@ -1307,11 +1289,13 @@ def main() -> None:
     if getattr(args, "arm_only", False) and getattr(args, "exclude_arm", False):
         logging.error("Cannot specify both --arm-only and --exclude-arm")
         sys.exit(1)
-    exclude_count = sum([
-        getattr(args, "exclude_intel", False),
-        getattr(args, "exclude_amd", False),
-        getattr(args, "exclude_arm", False),
-    ])
+    exclude_count = sum(
+        [
+            getattr(args, "exclude_intel", False),
+            getattr(args, "exclude_amd", False),
+            getattr(args, "exclude_arm", False),
+        ]
+    )
     if exclude_count >= 3:
         logging.error("Cannot exclude all three CPU vendors (Intel, AMD, ARM)")
         sys.exit(1)
@@ -1394,9 +1378,7 @@ def main() -> None:
                             excluded_regions.add(rgn)
                 logging.debug(f"Loaded exclusions from {exclude_file}")
             except IOError as e:
-                logging.warning(
-                    f"Could not read exclude-regions-file {exclude_file}: {e}"
-                )
+                logging.warning(f"Could not read exclude-regions-file {exclude_file}: {e}")
     if excluded_regions:
         logging.debug(f"Excluding regions: {', '.join(sorted(excluded_regions))}")
 
@@ -1407,7 +1389,7 @@ def main() -> None:
             sz = sz.strip()
             if sz:
                 # Normalize: remove Standard_ prefix if present, store lowercase
-                sz = sz.replace("Standard_", "").lower()
+                sz = sz.removeprefix("Standard_").lower()
                 excluded_vm_sizes.add(sz)
     if args.exclude_vm_sizes_file:
         try:
@@ -1415,7 +1397,7 @@ def main() -> None:
                 for line in f:
                     sz = line.strip()
                     if sz and not sz.startswith("#"):
-                        sz = sz.replace("Standard_", "").lower()
+                        sz = sz.removeprefix("Standard_").lower()
                         excluded_vm_sizes.add(sz)
         except IOError as e:
             logging.warning(f"Could not read exclude-vm-sizes-file: {e}")
@@ -1510,17 +1492,13 @@ def main() -> None:
         # Pre-filter series list by vendor to avoid unnecessary API calls
         if series_list:
             original_count = len(series_list)
-            series_list = [
-                s for s in series_list if not should_skip_by_vendor(s, args)
-            ]
+            series_list = [s for s in series_list if not should_skip_by_vendor(s, args)]
             if len(series_list) < original_count:
                 logging.debug(
                     f"Vendor filter reduced series from {original_count} to {len(series_list)}"
                 )
             if not series_list:
-                logging.error(
-                    "No VM series remain after applying CPU vendor filters"
-                )
+                logging.error("No VM series remain after applying CPU vendor filters")
                 sys.exit(1)
 
         try:
@@ -1536,9 +1514,7 @@ def main() -> None:
                     print(
                         f"Searching for cheapest spot price per core ({args.min_cores}-{args.max_cores} vCPUs)..."
                     )
-                    print(
-                        f"Fetching all VM pricing data (~{estimated_pages} pages expected)..."
-                    )
+                    print(f"Fetching all VM pricing data (~{estimated_pages} pages expected)...")
 
                 query = (
                     "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' "
@@ -1558,9 +1534,7 @@ def main() -> None:
 
                 page_start = time.time()
                 params = build_api_params(query, args)
-                json_data = fetch_pricing_data(
-                    api_url, params, session, verbose=args.verbose
-                )
+                json_data = fetch_pricing_data(api_url, params, session, verbose=args.verbose)
                 PAGE_ESTIMATOR.record_page(time.time() - page_start)
                 items = json_data.get("Items", [])
                 next_page = json_data.get("NextPageLink", "")
@@ -1574,9 +1548,7 @@ def main() -> None:
                         print(f"\r{progress_msg}        ", end="", flush=True)
                     try:
                         page_start = time.time()
-                        json_data = fetch_pricing_data(
-                            next_page, {}, session, verbose=args.verbose
-                        )
+                        json_data = fetch_pricing_data(next_page, {}, session, verbose=args.verbose)
                         PAGE_ESTIMATOR.record_page(time.time() - page_start)
                         items.extend(json_data.get("Items", []))
                         next_page = json_data.get("NextPageLink", "")
@@ -1721,9 +1693,7 @@ def main() -> None:
         per_core_data.sort(key=lambda x: x[2])
 
         unique_regions = set(row[5] for row in per_core_data)
-        logging.debug(
-            f"Total: {len(per_core_data)} entries across {len(unique_regions)} regions"
-        )
+        logging.debug(f"Total: {len(per_core_data)} entries across {len(unique_regions)} regions")
 
         # Output results
         if return_region:
@@ -1752,7 +1722,13 @@ def main() -> None:
             top_label = f"Top {args.top}" if args.top > 0 else "All"
             print(f"{top_label} cheapest per-core options:\n")
 
-            headers = ["SKU", f"{currency_symbol}/Hour", f"{currency_symbol}/Core/Hr", "Cores", "Region"]
+            headers = [
+                "SKU",
+                f"{currency_symbol}/Hour",
+                f"{currency_symbol}/Core/Hr",
+                "Cores",
+                "Region",
+            ]
             if args.estimate_monthly:
                 headers.insert(2, f"{currency_symbol}/Month")
             display_data = []
@@ -1795,16 +1771,12 @@ def main() -> None:
 
         # Estimate pages for all-vm-series mode
         has_region = bool(args.region)
-        estimated_pages = PAGE_ESTIMATOR.estimate_pages(
-            "all_series", has_region=has_region
-        )
+        estimated_pages = PAGE_ESTIMATOR.estimate_pages("all_series", has_region=has_region)
         PAGE_ESTIMATOR.start(estimated_pages)
 
         try:
             if not return_region:
-                print(
-                    f"Querying all VM series (~{estimated_pages} pages expected)..."
-                )
+                print(f"Querying all VM series (~{estimated_pages} pages expected)...")
 
             # Build minimal query - no productName, no armSkuName
             query = "priceType eq 'Consumption' and serviceName eq 'Virtual Machines' and serviceFamily eq 'Compute'"
@@ -1822,9 +1794,7 @@ def main() -> None:
 
             page_start = time.time()
             params = build_api_params(query, args)
-            json_data = fetch_pricing_data(
-                api_url, params, session, verbose=args.verbose
-            )
+            json_data = fetch_pricing_data(api_url, params, session, verbose=args.verbose)
             PAGE_ESTIMATOR.record_page(time.time() - page_start)
             items = json_data.get("Items", [])
             next_page = json_data.get("NextPageLink", "")
@@ -1832,15 +1802,11 @@ def main() -> None:
 
             while next_page and page_count < max_pages:
                 if not return_region:
-                    progress_msg = PAGE_ESTIMATOR.format_progress(
-                        page_count + 1, estimated_pages
-                    )
+                    progress_msg = PAGE_ESTIMATOR.format_progress(page_count + 1, estimated_pages)
                     print(f"\r{progress_msg}        ", end="", flush=True)
                 try:
                     page_start = time.time()
-                    json_data = fetch_pricing_data(
-                        next_page, {}, session, verbose=args.verbose
-                    )
+                    json_data = fetch_pricing_data(next_page, {}, session, verbose=args.verbose)
                     PAGE_ESTIMATOR.record_page(time.time() - page_start)
                     items.extend(json_data.get("Items", []))
                     next_page = json_data.get("NextPageLink", "")
@@ -1895,7 +1861,7 @@ def main() -> None:
                         continue
 
                     # Filter excluded VM sizes
-                    normalized_sku = arm_sku_name.replace("Standard_", "").lower()
+                    normalized_sku = arm_sku_name.removeprefix("Standard_").lower()
                     if normalized_sku in excluded_vm_sizes:
                         continue
 
@@ -1976,8 +1942,7 @@ def main() -> None:
                 display_data = all_series_data[: args.top]
             if args.estimate_monthly:
                 display_data = [
-                    row[:2] + [f"{float(row[1]) * 730:.2f}"] + row[2:]
-                    for row in display_data
+                    row[:2] + [f"{float(row[1]) * 730:.2f}"] + row[2:] for row in display_data
                 ]
             print(tabulate(display_data, headers=headers, tablefmt="psql"))
         sys.exit(0)
@@ -1991,17 +1956,16 @@ def main() -> None:
             vm_sz = vm_sz.strip()
             if not vm_sz:
                 continue
+            # Strip Standard_ prefix if present; the API filter adds it back
+            vm_sz = vm_sz.removeprefix("Standard_")
             # Check if this VM size is excluded
-            normalized = vm_sz.replace("Standard_", "").lower()
-            if normalized in excluded_vm_sizes:
+            if vm_sz.lower() in excluded_vm_sizes:
                 logging.debug(f"Skipping excluded VM size: {vm_sz}")
                 continue
             extracted_series = extract_series_from_vm_size(vm_sz)
             vm_sizes_list.append((vm_sz, extracted_series))
         if not vm_sizes_list:
-            logging.error(
-                "No valid VM sizes provided in --vm-sizes (all may be excluded)"
-            )
+            logging.error("No valid VM sizes provided in --vm-sizes (all may be excluded)")
             sys.exit(1)
     else:
         # Use legacy sku-pattern and series-pattern
@@ -2061,9 +2025,7 @@ def main() -> None:
     max_pages = 50  # Safety limit per VM size
 
     # Estimate total pages for SKU queries
-    estimated_pages = PAGE_ESTIMATOR.estimate_pages(
-        "multi_sku", vm_count=len(vm_sizes_list)
-    )
+    estimated_pages = PAGE_ESTIMATOR.estimate_pages("multi_sku", vm_count=len(vm_sizes_list))
     PAGE_ESTIMATOR.start(estimated_pages)
 
     try:
@@ -2076,9 +2038,7 @@ def main() -> None:
         for idx, (sku, series) in enumerate(vm_sizes_list):
             if len(vm_sizes_list) > 1 and not return_region:
                 eta = PAGE_ESTIMATOR.get_eta_str(idx, len(vm_sizes_list))
-                print(
-                    f"\n[{idx + 1}/{len(vm_sizes_list)}] Querying {sku} (ETA: {eta})..."
-                )
+                print(f"\n[{idx + 1}/{len(vm_sizes_list)}] Querying {sku} (ETA: {eta})...")
 
             # Build query for this VM size
             query = (
@@ -2120,9 +2080,7 @@ def main() -> None:
             # Initial request
             page_start = time.time()
             params = build_api_params(query, args)
-            json_data = fetch_pricing_data(
-                api_url, params, session, verbose=args.verbose
-            )
+            json_data = fetch_pricing_data(api_url, params, session, verbose=args.verbose)
             PAGE_ESTIMATOR.record_page(time.time() - page_start)
             build_pricing_table(json_data, table_data, non_spot, low_priority)
 
@@ -2132,14 +2090,10 @@ def main() -> None:
             # Follow pagination
             while next_page and page_count < max_pages:
                 if not return_region:
-                    progress_msg = PAGE_ESTIMATOR.format_progress(
-                        page_count + 1, max_pages
-                    )
+                    progress_msg = PAGE_ESTIMATOR.format_progress(page_count + 1, max_pages)
                     print(f"\r{progress_msg}        ", end="", flush=True)
                 page_start = time.time()
-                json_data = fetch_pricing_data(
-                    next_page, {}, session, verbose=args.verbose
-                )
+                json_data = fetch_pricing_data(next_page, {}, session, verbose=args.verbose)
                 PAGE_ESTIMATOR.record_page(time.time() - page_start)
                 next_page = json_data.get("NextPageLink", "")
                 build_pricing_table(json_data, table_data, non_spot, low_priority)
@@ -2165,16 +2119,14 @@ def main() -> None:
             sku = args.sku_pattern.replace("#", str(args.cpu))
             error_msg += f"\n\nSearched for: {sku}"
             if args.cpu > 32:
-                error_msg += f"\n\nNote: B-series VMs max out at 32 vCPUs. For {args.cpu} cores, try:"
                 error_msg += (
-                    "\n  --no-burstable           (search all non-burstable VMs)"
+                    f"\n\nNote: B-series VMs max out at 32 vCPUs. For {args.cpu} cores, try:"
                 )
+                error_msg += "\n  --no-burstable           (search all non-burstable VMs)"
                 error_msg += "\n  --general-compute        (search D and F series)"
                 error_msg += "\n  --sku-pattern D#as_v5    (specific series pattern)"
             else:
-                error_msg += (
-                    "\n\nTry using --no-burstable or --general-compute for more options"
-                )
+                error_msg += "\n\nTry using --no-burstable or --general-compute for more options"
         logging.error(error_msg)
         sys.exit(1)
 
@@ -2184,14 +2136,10 @@ def main() -> None:
     # Filter out excluded regions
     if excluded_regions:
         original_count = len(table_data)
-        table_data = [
-            row for row in table_data if row[3].lower() not in excluded_regions
-        ]
+        table_data = [row for row in table_data if row[3].lower() not in excluded_regions]
         filtered_count = original_count - len(table_data)
         if filtered_count > 0:
-            logging.debug(
-                f"Filtered out {filtered_count} entries from excluded regions"
-            )
+            logging.debug(f"Filtered out {filtered_count} entries from excluded regions")
 
     # Filter by CPU vendor
     has_vendor_filter = (
@@ -2204,9 +2152,7 @@ def main() -> None:
     )
     if has_vendor_filter:
         original_count = len(table_data)
-        table_data = [
-            row for row in table_data if not should_skip_by_vendor(row[0], args)
-        ]
+        table_data = [row for row in table_data if not should_skip_by_vendor(row[0], args)]
         filtered_count = original_count - len(table_data)
         if filtered_count > 0:
             logging.debug(f"Filtered out {filtered_count} entries by CPU vendor")

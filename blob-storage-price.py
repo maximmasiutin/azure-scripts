@@ -63,9 +63,7 @@ class AzurePricesFetcher:
 
         return session
 
-    def fetch_azure_prices(
-        self, params: Optional[Dict[str, str]]
-    ) -> List[Dict[str, Any]]:
+    def fetch_azure_prices(self, params: Optional[Dict[str, str]]) -> List[Dict[str, Any]]:
         """
         Fetch Azure retail prices from the API with proper error handling and security.
 
@@ -136,9 +134,7 @@ class AzurePricesFetcher:
 
                 # Validate response structure
                 if not isinstance(data, dict):
-                    print(
-                        "Invalid response format: expected JSON object", file=sys.stderr
-                    )
+                    print("Invalid response format: expected JSON object", file=sys.stderr)
                     sys.exit(1)
 
                 current_items = data.get("Items", [])
@@ -215,9 +211,7 @@ def validate_blob_types(blob_types_str: str) -> List[str]:
     validated_types = []
 
     # Define allowed characters for blob type names (security measure)
-    allowed_chars = set(
-        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-."
-    )
+    allowed_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 _-.")
 
     for blob_type in blob_types:
         if not blob_type:
@@ -230,9 +224,7 @@ def validate_blob_types(blob_types_str: str) -> List[str]:
 
         # Validate characters
         if not set(blob_type).issubset(allowed_chars):
-            print(
-                f"Error: Invalid characters in blob type: {blob_type}", file=sys.stderr
-            )
+            print(f"Error: Invalid characters in blob type: {blob_type}", file=sys.stderr)
             sys.exit(1)
 
         validated_types.append(blob_type)
@@ -351,10 +343,10 @@ Security Notes:
     try:
         # Escape single quotes in blob type names for the filter
         escaped_types = [blob_type.replace("'", "''") for blob_type in blob_types]
-        product_filter = " or ".join(
-            f"productName eq '{blob_type}'" for blob_type in escaped_types
+        product_filter = " or ".join(f"productName eq '{blob_type}'" for blob_type in escaped_types)
+        api_filter = (
+            f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
         )
-        api_filter = f"({product_filter}) and priceType eq 'Consumption' and serviceName eq 'Storage'"
         if args.access_tier:
             tier_map = {
                 "hot": "Hot",
@@ -368,7 +360,10 @@ Security Notes:
         params = {"$filter": api_filter}
         if args.currency:
             if not args.currency.isalpha() or len(args.currency) != 3:
-                print("Error: Currency must be a 3-letter ISO 4217 code (e.g., EUR, GBP)", file=sys.stderr)
+                print(
+                    "Error: Currency must be a 3-letter ISO 4217 code (e.g., EUR, GBP)",
+                    file=sys.stderr,
+                )
                 sys.exit(1)
             params["currencyCode"] = args.currency
     except Exception as e:
@@ -422,9 +417,7 @@ def process_items(items: List[Dict[str, Any]], verbose: bool = False) -> Tuple[
                     continue
             except (ValueError, TypeError):
                 if verbose:
-                    print(
-                        f"Warning: Invalid price in item {i}, skipping", file=sys.stderr
-                    )
+                    print(f"Warning: Invalid price in item {i}, skipping", file=sys.stderr)
                 invalid_items += 1
                 continue
 
@@ -481,9 +474,7 @@ def calculate_region_prices(
     return region_prices
 
 
-def calculate_average_prices(
-    region_prices: Dict[str, List[float]]
-) -> List[Tuple[str, float]]:
+def calculate_average_prices(region_prices: Dict[str, List[float]]) -> List[Tuple[str, float]]:
     """Calculate average prices for each region."""
     region_avg_prices = []
 
@@ -519,8 +510,7 @@ def format_output(
             ]
         else:
             region_data = [
-                {"region": region, "avg_price": price}
-                for region, price in region_avg_prices
+                {"region": region, "avg_price": price} for region, price in region_avg_prices
             ]
         result = {
             "blob_types": blob_types,
@@ -555,17 +545,20 @@ def format_output(
             else f"Blob storage service ({blob_types[0]}) price per region"
         )
         print("\n" + table_caption)
+        formatted_data: list[tuple[str, ...]]
         if estimate_tb is not None:
-            headers = ["Region", f"Avg Price/GB ({currency_label})", f"Est. {currency_label}/Month ({estimate_tb} TB)"]
+            headers = [
+                "Region",
+                f"Avg Price/GB ({currency_label})",
+                f"Est. {currency_label}/Month ({estimate_tb} TB)",
+            ]
             formatted_data = [
                 (region, f"{price:.6f}", f"{price * estimate_tb * 1024:.2f}")
                 for region, price in region_avg_prices
             ]
         else:
             headers = ["Region", f"Average Price ({currency_label})"]
-            formatted_data = [
-                (region, f"{price:.6f}") for region, price in region_avg_prices
-            ]
+            formatted_data = [(region, f"{price:.6f}") for region, price in region_avg_prices]
         print(tabulate(formatted_data, headers=headers, tablefmt="psql"))
 
 
@@ -603,9 +596,7 @@ def main() -> None:
             print(f"Total services found: {len(service_regions)}", file=sys.stderr)
 
         # Calculate prices
-        region_prices = calculate_region_prices(
-            service_regions, service_prices, all_regions
-        )
+        region_prices = calculate_region_prices(service_regions, service_prices, all_regions)
         region_avg_prices = calculate_average_prices(region_prices)
 
         if not region_avg_prices:
@@ -614,7 +605,10 @@ def main() -> None:
 
         # Output results
         format_output(
-            blob_types, region_avg_prices, excluded_regions, args.output_format,
+            blob_types,
+            region_avg_prices,
+            excluded_regions,
+            args.output_format,
             estimate_tb=args.estimate_monthly,
             currency=args.currency,
         )

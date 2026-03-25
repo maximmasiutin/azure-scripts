@@ -285,7 +285,7 @@ A collection of Python and PowerShell utilities for Azure cost optimization, mon
 
 **Python Requirements:**
 
-- Python 3.6+
+- Python 3.12+
 - Required packages: `curl_cffi`, `tabulate`, `azure-storage-blob`, `azure-data-tables`, `Pillow`
 
 **PowerShell Requirements:**
