@@ -15,15 +15,15 @@
 
 # Usage:
 # 1. Make the script executable: chmod +x monitor-eviction.py
-# 2. Run the script: ./monitor-eviction.py --stop-services <service1,service2> --hook <path_to_hook> [--skip-azure-check]
+# 2. Run the script:
+#    ./monitor-eviction.py --stop-services <service1,service2>
+#        --hook <path_to_hook> [--skip-azure-check]
 # 3. The script will run indefinitely, checking for eviction events every second.
 
 # The hook is executed before stopping the services.
 
 import os
 import re
-import shlex
-import sys
 from argparse import ArgumentParser
 from os import path, access, X_OK
 from platform import uname, node, system
@@ -31,7 +31,6 @@ from subprocess import run
 from sys import stderr, exit
 from datetime import datetime, timezone
 from time import sleep
-from urllib.parse import urlparse
 
 from requests import get, exceptions
 
@@ -63,9 +62,7 @@ def get_scheduled_events(max_retries=3, backoff_factor=2):
                 )
                 return {}
             wait_time = backoff_factor**attempt
-            print(
-                f"Metadata service error (attempt {attempt + 1}), retrying in {wait_time}s: {e}"
-            )
+            print(f"Metadata service error (attempt {attempt + 1}), retrying in {wait_time}s: {e}")
             sleep(wait_time)
     return {}
 
@@ -105,9 +102,7 @@ def validate_hook_path(hook_path):
     else:
         allowed_dirs = ["/opt/", "/usr/local/bin/", "/home/"]
     if not any(real_path.startswith(safe_dir) for safe_dir in allowed_dirs):
-        raise ValueError(
-            f"Hook script must be in allowed directories {allowed_dirs}: {real_path}"
-        )
+        raise ValueError(f"Hook script must be in allowed directories {allowed_dirs}: {real_path}")
 
     return real_path
 
@@ -139,24 +134,18 @@ def eviction_action(a_services, a_hook):
         try:
             if is_windows:
                 # Try "net stop" first, then "sc stop" as fallback
-                rc = run(
-                    ["net", "stop", service], check=False, timeout=60
-                ).returncode
+                rc = run(["net", "stop", service], check=False, timeout=60).returncode
                 if rc == 0:
                     print("Stopped service", service, "with net stop")
                 else:
-                    rc = run(
-                        ["sc", "stop", service], check=False, timeout=60
-                    ).returncode
+                    rc = run(["sc", "stop", service], check=False, timeout=60).returncode
                     if rc == 0:
                         print("Stopped service", service, "with sc stop")
                     else:
                         print("Error stopping service", service, "Return code", rc)
             else:
                 # Try systemctl first (modern systems)
-                rc = run(
-                    ["systemctl", "stop", service], check=False, timeout=60
-                ).returncode
+                rc = run(["systemctl", "stop", service], check=False, timeout=60).returncode
                 if rc == 0:
                     print("Stopped service", service, "with systemctl")
                 else:
@@ -247,7 +236,14 @@ def parse_args():
         parser.error("--poll-interval must be between 1 and 30")
     ret_log_file = args.log_file
 
-    return ret_services, ret_hook, ret_skip_azure_check, ret_dry_run, ret_poll_interval, ret_log_file
+    return (
+        ret_services,
+        ret_hook,
+        ret_skip_azure_check,
+        ret_dry_run,
+        ret_poll_interval,
+        ret_log_file,
+    )
 
 
 if __name__ == "__main__":
@@ -324,9 +320,7 @@ if __name__ == "__main__":
         if not payload:
             error_count += 1
             if error_count >= max_errors:
-                print(
-                    f"Too many consecutive errors ({error_count}), exiting", file=stderr
-                )
+                print(f"Too many consecutive errors ({error_count}), exiting", file=stderr)
                 exit(1)
             sleep(5)  # Wait longer on errors
             continue

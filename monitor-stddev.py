@@ -9,7 +9,7 @@ Copyright (C) 2025-2026 Maxim Masiutin. All rights reserved.
 
 See monitor-stddev.md for details.
 
-You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow`
+Install requirements: python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow
 """
 
 from time import time, sleep
@@ -55,10 +55,6 @@ def validate_file_path(file_path: str, operation: str = "access") -> str:
     # Resolve to absolute path
     real_path = path.realpath(file_path)
 
-    # After resolving, verify no traversal occurred by checking original didn't escape
-    # Get the absolute path of the original (without following symlinks initially)
-    abs_original = path.abspath(file_path)
-
     # Verify the resolved path is within the current working directory or an absolute path
     # that was explicitly provided (starts with / or drive letter on Windows)
     cwd = path.realpath(".")
@@ -95,9 +91,7 @@ SAMPLE_SIZE_SECONDS: int = 240
 UPDATE_INTERVAL_SECONDS: int = 60
 STATUS_UNHEALTHY: int = 0
 STATUS_HEALTHY: int = 1
-MAX_HISTORY_SIZE: int = (
-    SAMPLE_SIZE_SECONDS * 3
-)  # Keep some buffer to prevent memory leaks
+MAX_HISTORY_SIZE: int = SAMPLE_SIZE_SECONDS * 3  # Keep some buffer to prevent memory leaks
 
 
 def cleanup_old_data(data_list: List[Any], max_size: int) -> None:
@@ -150,9 +144,7 @@ def export_data(
 
                 # Use QUOTE_ALL to prevent CSV formula injection
                 with open(validated_path, "w", encoding="utf-8", newline="") as f:
-                    dict_writer = csv.DictWriter(
-                        f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL
-                    )
+                    dict_writer = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_ALL)
                     dict_writer.writeheader()
                     dict_writer.writerows(data)
 
@@ -169,15 +161,11 @@ class DataStorage(ABC):
         self.historical_data: List[Dict[str, Union[str, int]]] = []
 
     @abstractmethod
-    def load_historical_data(
-        self, debug_output: bool
-    ) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
         pass
 
     @abstractmethod
-    def append_metric(
-        self, record: Dict[str, Union[str, int]], debug_output: bool
-    ) -> None:
+    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
         pass
 
     @abstractmethod
@@ -196,9 +184,7 @@ class JsonFileStorage(DataStorage):
             raise
         self.historical_data = self.load_historical_data(debug_output=debug_output)
 
-    def load_historical_data(
-        self, debug_output: bool
-    ) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
         # self.filename is already validated in __init__
         # Use basename to sanitize and break taint chain
         safe_dir = path.dirname(path.realpath(self.filename))
@@ -218,24 +204,15 @@ class JsonFileStorage(DataStorage):
             except JSONDecodeError as json_err:
                 print(f"JSON decode error in {self.filename}: {json_err}", file=stderr)
             except (OSError, IOError) as file_err:
-                print(
-                    f"File error while reading {self.filename}: {file_err}", file=stderr
-                )
+                print(f"File error while reading {self.filename}: {file_err}", file=stderr)
             except Exception as e:
-                print(
-                    f"Unexpected error while loading historical data: {e}", file=stderr
-                )
+                print(f"Unexpected error while loading historical data: {e}", file=stderr)
             return []
-        else:
-            if debug_output:
-                print(
-                    f"No existing historical data file found at {self.filename}. Starting fresh."
-                )
-            return []
+        if debug_output:
+            print(f"No existing historical data file found at {self.filename}. Starting fresh.")
+        return []
 
-    def append_metric(
-        self, record: Dict[str, Union[str, int]], debug_output: bool
-    ) -> None:
+    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
         self.historical_data.append(record)
         try:
             with open(self.filename, "w", encoding="utf-8") as file:
@@ -243,24 +220,18 @@ class JsonFileStorage(DataStorage):
             if debug_output:
                 print(f"Successfully appended metric to {self.filename}")
         except (OSError, IOError) as file_err:
-            print(
-                f"File error while writing to {self.filename}: {file_err}", file=stderr
-            )
+            print(f"File error while writing to {self.filename}: {file_err}", file=stderr)
         except TypeError as type_err:
             print(f"Type error during JSON serialization: {type_err}", file=stderr)
         except Exception as e:
             print(f"Unexpected error while appending metric: {e}", file=stderr)
 
     def print_raw_entities(self) -> None:
-        raise NotImplementedError(
-            "This method is not applicable for JSON file storage."
-        )
+        raise NotImplementedError("This method is not applicable for JSON file storage.")
 
 
 class CosmosDBTableStorage(DataStorage):
-    def __init__(
-        self, connection_string: str, table_name: str, debug_output: bool
-    ) -> None:
+    def __init__(self, connection_string: str, table_name: str, debug_output: bool) -> None:
         super().__init__()
         try:
             self.table_client = TableClient.from_connection_string(
@@ -271,9 +242,7 @@ class CosmosDBTableStorage(DataStorage):
             print(f"Failed to initialize Cosmos DB connection: {e}", file=stderr)
             raise
 
-    def load_historical_data(
-        self, debug_output: bool
-    ) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
         try:
             entities = list(self.table_client.list_entities())
             metrics: List[Dict[str, Union[str, int]]] = [
@@ -289,9 +258,7 @@ class CosmosDBTableStorage(DataStorage):
             print(f"Error loading data from Cosmos DB: {e}", file=stderr)
             return []
 
-    def append_metric(
-        self, record: Dict[str, Union[str, int]], debug_output: bool
-    ) -> None:
+    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
         entity = {
             "PartitionKey": str(record["healthy"]),
             "RowKey": str(record["timestamp"]),
@@ -337,9 +304,7 @@ class FileSaver(ResultsSaver):
         self.save_name_json = save_name_json
         self.save_name_html = save_name_html
         self.save_name_png = f"{path.splitext(save_name_html)[0]}.png"
-        self.save_name_last_error_json = (
-            f"{path.splitext(save_name_json)[0]}-last_error.json"
-        )
+        self.save_name_last_error_json = f"{path.splitext(save_name_json)[0]}-last_error.json"
 
     def save_json(self, content: str, debug_output: bool) -> None:
         try:
@@ -379,16 +344,14 @@ class AzureBlobSaver(ResultsSaver):
         save_name_html: str,
     ) -> None:
         try:
-            blob_service_client: BlobServiceClient = (
-                BlobServiceClient.from_connection_string(azure_connection_string)
+            blob_service_client: BlobServiceClient = BlobServiceClient.from_connection_string(
+                azure_connection_string
             )
             self.azure_container_name = azure_container_name
             self.save_name_json = save_name_json
             self.save_name_html = save_name_html
             self.save_name_png = f"{path.splitext(save_name_html)[0]}.png"
-            self.save_name_last_error_json = (
-                f"{path.splitext(save_name_json)[0]}-last_error.json"
-            )
+            self.save_name_last_error_json = f"{path.splitext(save_name_json)[0]}-last_error.json"
             self.blob_client_json: BlobClient = blob_service_client.get_blob_client(
                 container=azure_container_name, blob=self.save_name_json
             )
@@ -398,10 +361,8 @@ class AzureBlobSaver(ResultsSaver):
             self.blob_client_png: BlobClient = blob_service_client.get_blob_client(
                 container=azure_container_name, blob=self.save_name_png
             )
-            self.blob_client_last_error_json: BlobClient = (
-                blob_service_client.get_blob_client(
-                    container=azure_container_name, blob=self.save_name_last_error_json
-                )
+            self.blob_client_last_error_json: BlobClient = blob_service_client.get_blob_client(
+                container=azure_container_name, blob=self.save_name_last_error_json
             )
         except Exception as e:
             print(f"Failed to initialize Azure Blob Storage: {e}", file=stderr)
@@ -418,7 +379,8 @@ class AzureBlobSaver(ResultsSaver):
             )
             if debug_output:
                 print(
-                    f"JSON data uploaded to Azure: {self.azure_container_name}/{self.save_name_json}"
+                    f"JSON data uploaded to Azure: "
+                    f"{self.azure_container_name}/{self.save_name_json}"
                 )
         except Exception as e:
             print(f"Error uploading JSON to Azure: {e}", file=stderr)
@@ -434,7 +396,8 @@ class AzureBlobSaver(ResultsSaver):
             )
             if debug_output:
                 print(
-                    f"HTML data uploaded to Azure: {self.azure_container_name}/{self.save_name_html}"
+                    f"HTML data uploaded to Azure: "
+                    f"{self.azure_container_name}/{self.save_name_html}"
                 )
         except Exception as e:
             print(f"Error uploading HTML to Azure: {e}", file=stderr)
@@ -466,7 +429,8 @@ class AzureBlobSaver(ResultsSaver):
             )
             if debug_output:
                 print(
-                    f"Last error JSON uploaded: {self.azure_container_name}/{self.save_name_last_error_json}"
+                    f"Last error JSON uploaded: "
+                    f"{self.azure_container_name}/{self.save_name_last_error_json}"
                 )
         except Exception as e:
             print(f"Error uploading last error JSON to Azure: {e}", file=stderr)
@@ -481,11 +445,10 @@ def save_json(file_name: str, data: List[Dict[str, Union[str, int]]]) -> None:
         print(f"Error saving JSON file {file_name}: {e}", file=stderr)
 
 
-def trim_data(
-    data: List[Dict[str, Union[str, int]]]
-) -> List[Dict[str, Union[str, int]]]:
+def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[str, int]]]:
     """
-    Remove one-minute-duplicates (entries with time difference < 59.99s) and keep only the last DATASET_LENGTH_MINUTES items.
+    Remove one-minute-duplicates (entries with time difference < 59.99s)
+    and keep only the last DATASET_LENGTH_MINUTES items.
     """
     if not data:
         return []
@@ -570,8 +533,8 @@ def create_graphical_representation(
         # Add date markers
         if font_file_name and path.exists(font_file_name):
             try:
-                font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont] = (
-                    ImageFont.truetype(font_file_name, size=40)
+                font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont] = ImageFont.truetype(
+                    font_file_name, size=40
                 )
             except Exception:
                 font = ImageFont.load_default()
@@ -597,9 +560,7 @@ def create_graphical_representation(
                             anchor = "ra"
                         else:
                             anchor = "ma"
-                        draw.text(
-                            (x_pos, 10), date_str, font=font, fill=3, anchor=anchor
-                        )
+                        draw.text((x_pos, 10), date_str, font=font, fill=3, anchor=anchor)
                 previous_date = current_date
             except (ValueError, KeyError):
                 continue
@@ -645,7 +606,6 @@ def render_history_to_png_file(
         print(f"Error saving PNG file {validated_path}: {e}", file=stderr)
 
 
-
 def get_firefox_impersonate() -> str:
     """Get best available Firefox impersonation for curl_cffi.
 
@@ -653,8 +613,9 @@ def get_firefox_impersonate() -> str:
     """
     try:
         from curl_cffi.requests import BrowserType
+
         # Prefer newest Firefox version available
-        for browser in ['firefox144', 'firefox135', 'firefox133']:
+        for browser in ["firefox144", "firefox135", "firefox133"]:
             if hasattr(BrowserType, browser):
                 return browser
     except (ImportError, AttributeError):
@@ -719,14 +680,12 @@ def monitor_website(
             print("Falling back to local file storage.")
             saver = FileSaver(save_name_json, save_name_html)
     else:
-        print(
-            "Not using Azure storage since connection string/container name not supplied."
-        )
+        print("Not using Azure storage since connection string/container name not supplied.")
         saver = FileSaver(save_name_json, save_name_html)
 
     # Use browser impersonation for TLS fingerprint to avoid bot detection
     # If user-agent contains "Firefox", use Firefox impersonation; otherwise Chrome
-    browser_impersonate = "chrome"
+    browser_impersonate: Any = "chrome"
     if user_agent and "firefox" in user_agent.lower():
         browser_impersonate = get_firefox_impersonate()
     session = Session(impersonate=browser_impersonate) if use_session else None
@@ -777,9 +736,7 @@ def monitor_website(
                             f"{response_status_code}_{save_name_html.rsplit('.', 1)[0]}{err_ext}"
                         )
                         try:
-                            with open(
-                                error_file_name, "w", encoding="utf-8"
-                            ) as error_file:
+                            with open(error_file_name, "w", encoding="utf-8") as error_file:
                                 error_file.write(response.text)
                         except Exception as file_err:
                             print(
@@ -805,13 +762,9 @@ def monitor_website(
 
             # Propagate results for each second in the interval
             errors.extend([current_probe_error] * probe_interval)
-            effective_latencies.extend(
-                [current_probe_effective_latency] * probe_interval
-            )
+            effective_latencies.extend([current_probe_effective_latency] * probe_interval)
             adjusted_latencies.extend([current_probe_adjusted_latency] * probe_interval)
-            response_status_codes.extend(
-                [current_probe_response_status_code] * probe_interval
-            )
+            response_status_codes.extend([current_probe_response_status_code] * probe_interval)
 
             # Clean up old data to prevent memory leaks
             cleanup_old_data(errors, MAX_HISTORY_SIZE)
@@ -838,20 +791,14 @@ def monitor_website(
                 max_eff = max(valid_eff_latencies) if valid_eff_latencies else 0.0
                 avg_eff = mean(valid_eff_latencies) if valid_eff_latencies else 0.0
                 avg_adj = mean(valid_adj_latencies) if valid_adj_latencies else 0.0
-                std_dev_eff = (
-                    stdev(valid_eff_latencies) if len(valid_eff_latencies) > 1 else 0.0
-                )
-                std_dev_adj = (
-                    stdev(valid_adj_latencies) if len(valid_adj_latencies) > 1 else 0.0
-                )
+                std_dev_eff = stdev(valid_eff_latencies) if len(valid_eff_latencies) > 1 else 0.0
+                std_dev_adj = stdev(valid_adj_latencies) if len(valid_adj_latencies) > 1 else 0.0
 
                 num_errors = sum(1 for e in analysis_errors if e is True)
                 error_rate: float = (num_errors / SAMPLE_SIZE_SECONDS) * 100.0
 
                 # Find most common non-200 status code in the analysis window
-                error_codes = [
-                    cd for cd in analysis_status_codes if cd is not None and cd != 200
-                ]
+                error_codes = [cd for cd in analysis_status_codes if cd is not None and cd != 200]
                 most_common_code: Optional[int] = 200
                 if error_codes:
                     code_counts = Counter(error_codes)
@@ -871,7 +818,8 @@ def monitor_website(
                     print(
                         f"Probe @ {probe_timestamp_dt.strftime('%H:%M:%S')}: "
                         f"AvgEff: {avg_eff:.3f}s, AvgAdj: {avg_adj:.3f}s, Err%: {error_rate:.1f}, "
-                        f"StdEff: {std_dev_eff:.3f}s, StdAdj: {std_dev_adj:.3f}s, Code: {most_common_code}, Health: {health_status}"
+                        f"StdEff: {std_dev_eff:.3f}s, StdAdj: {std_dev_adj:.3f}s, "
+                        f"Code: {most_common_code}, Health: {health_status}"
                     )
 
                 timestamp_str = probe_timestamp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -903,21 +851,21 @@ def monitor_website(
                 )
                 data_json_str: str = dumps(json_data, indent=4)
 
-                health_text: str = (
-                    "Healthy" if health_status == STATUS_HEALTHY else "Unhealthy"
-                )
-                health_color: str = (
-                    "green" if health_status == STATUS_HEALTHY else "red"
-                )
+                health_text: str = "Healthy" if health_status == STATUS_HEALTHY else "Unhealthy"
+                health_color: str = "green" if health_status == STATUS_HEALTHY else "red"
 
-                local_dt = probe_timestamp_dt.astimezone(
-                    timezone(timedelta(hours=tz_offset))
-                )
+                local_dt = probe_timestamp_dt.astimezone(timezone(timedelta(hours=tz_offset)))
                 local_dt_str: str = local_dt.strftime("%Y-%m-%d %H:%M:%S ") + tz_caption
 
                 escaped_title: str = html.escape(page_title) if page_title else ""
                 title_prefix: str = f"{escaped_title} - " if escaped_title else ""
-                title_heading: str = f'<h1 class="title">{escaped_title}</h1>' if escaped_title else ""
+                title_heading: str = (
+                    f'<h1 class="title">{escaped_title}</h1>' if escaped_title else ""
+                )
+
+                err_json = f"{path.splitext(save_name_json)[0]}-last_error.json"
+                img_src = f"{path.splitext(save_name_html)[0]}.png"
+                hours_count = RESULTS_COUNT_MINUTES // 60
 
                 data_html: str = f"""
                 <!DOCTYPE html>
@@ -971,9 +919,9 @@ def monitor_website(
                     <div class="status">{health_text}</div>
                     <div class="time">{local_dt_str}</div>
                     <div class="link"><a href="{save_name_json}">{save_name_json}</a></div>
-                    <div class="link"><a href="{path.splitext(save_name_json)[0]}-last_error.json">{path.splitext(save_name_json)[0]}-last_error.json</a></div>
+                    <div class="link"><a href="{err_json}">{err_json}</a></div>
                     <div class="image-container">
-                        <img src="{path.splitext(save_name_html)[0]}.png" alt="Health Status for Last {RESULTS_COUNT_MINUTES // (60)} Hours">
+                        <img src="{img_src}" alt="Health Status for Last {hours_count} Hours">
                     </div>
                 </body>
                 </html>
@@ -1045,7 +993,7 @@ def test_url(
     print("-" * 60)
 
     # Use browser impersonation matching user-agent
-    browser_impersonate = "chrome"
+    browser_impersonate: Any = "chrome"
     if user_agent and "firefox" in user_agent.lower():
         browser_impersonate = get_firefox_impersonate()
     headers = build_request_headers(user_agent, authorization)
@@ -1107,32 +1055,25 @@ def test_url(
             if is_cloudflare:
                 print("Note: Cloudflare detected but request succeeded")
             return 0
-        elif response.status_code == 403:
+        if response.status_code == 403:
             print("Result: BLOCKED - access forbidden")
             if is_cloudflare or cf_ray:
                 print("Reason: Cloudflare protection detected")
-                print(
-                    "Solution: Whitelist monitoring server IP in Cloudflare firewall rules"
-                )
+                print("Solution: Whitelist monitoring server IP in Cloudflare firewall rules")
             return 1
-        elif is_captcha:
+        if is_captcha:
             print("Result: BLOCKED - CAPTCHA challenge detected")
-            print(
-                "Reason: Cloudflare or similar protection requiring human verification"
-            )
-            print(
-                "Solution: Whitelist monitoring server IP in Cloudflare firewall rules"
-            )
+            print("Reason: Cloudflare or similar protection requiring human verification")
+            print("Solution: Whitelist monitoring server IP in Cloudflare firewall rules")
             if response.text:
                 preview = response.text[:500].replace("\n", " ").replace("\r", "")
                 print(f"Body preview: {preview}...")
             return 1
-        elif response.status_code >= 400:
+        if response.status_code >= 400:
             print(f"Result: ERROR - HTTP {response.status_code}")
             return 1
-        else:
-            print(f"Result: OK - status {response.status_code}")
-            return 0
+        print(f"Result: OK - status {response.status_code}")
+        return 0
 
     except Exception as e:
         print(f"Result: FAILED - {e}")
@@ -1147,15 +1088,9 @@ def main() -> None:
 
     parser = ArgumentParser(description="Website Health Monitoring Script")
     parser.add_argument("--url", type=str, help="The URL of the website to monitor")
-    parser.add_argument(
-        "--authorization", type=str, help='Specify "Authorization" header'
-    )
-    parser.add_argument(
-        "--user-agent", type=str, help='Overrides the "User-Agent" header'
-    )
-    parser.add_argument(
-        "--timeout", type=float, default=2.0, help="Request timeout in seconds"
-    )
+    parser.add_argument("--authorization", type=str, help='Specify "Authorization" header')
+    parser.add_argument("--user-agent", type=str, help='Overrides the "User-Agent" header')
+    parser.add_argument("--timeout", type=float, default=2.0, help="Request timeout in seconds")
     parser.add_argument(
         "--probe-interval",
         type=int,
@@ -1204,9 +1139,7 @@ def main() -> None:
         default="index.html",
         help="Blob/file name for HTML results",
     )
-    parser.add_argument(
-        "--tz-offset", type=float, default=0.0, help="Time zone offset in hours"
-    )
+    parser.add_argument("--tz-offset", type=float, default=0.0, help="Time zone offset in hours")
     parser.add_argument("--tz-caption", type=str, default="UTC", help="Time zone label")
     parser.add_argument(
         "--page-title",
@@ -1214,12 +1147,8 @@ def main() -> None:
         default=None,
         help="Optional title shown as a heading on the HTML status page",
     )
-    parser.add_argument(
-        "--render-history-input", type=str, help="Render history from a JSON file"
-    )
-    parser.add_argument(
-        "--render-history-output", type=str, help="Output PNG file for history"
-    )
+    parser.add_argument("--render-history-input", type=str, help="Render history from a JSON file")
+    parser.add_argument("--render-history-output", type=str, help="Output PNG file for history")
     parser.add_argument(
         "--cosmosdb-connection-string",
         type=str,
@@ -1322,9 +1251,7 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        export_data(
-            storage.historical_data, args.export_file, args.export_format, args.debug
-        )
+        export_data(storage.historical_data, args.export_file, args.export_format, args.debug)
         return
 
     storage.historical_data = trim_data(storage.historical_data)
@@ -1337,9 +1264,7 @@ def main() -> None:
         return
 
     if args.render_history_input and args.render_history_output:
-        print(
-            f"Rendering history from {args.render_history_input} to {args.render_history_output}"
-        )
+        print(f"Rendering history from {args.render_history_input} to {args.render_history_output}")
         try:
             render_history_to_png_file(
                 storage.historical_data,
@@ -1371,9 +1296,7 @@ def main() -> None:
             sys.exit(exit_code)
 
         if not 1 <= args.probe_interval <= 60:
-            print(
-                "Error: Probe interval must be between 1 and 60 seconds.", file=stderr
-            )
+            print("Error: Probe interval must be between 1 and 60 seconds.", file=stderr)
             sys.exit(1)
 
         print(f"Starting website monitoring for: {args.url}")

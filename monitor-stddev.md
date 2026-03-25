@@ -15,13 +15,13 @@ The program periodically checks the specified website, calculates relevant stati
 - Customizable user agent for website requests.
 
 ## Requirements
-- Python 3.x
+- Python 3.12+
 - `curl_cffi` package (impersonates Chrome TLS fingerprint to avoid Cloudflare bot detection)
 - `azure-storage-blob` package
 - `azure-data-tables` package
 - `Pillow` package (PIL)
-- `statistics` package (standard since Python 3.4)
-- `argparse` package (standard since Python 3.2)
+- `statistics` package (standard library)
+- `argparse` package (standard library)
 
 You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow`
 
