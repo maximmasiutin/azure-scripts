@@ -599,7 +599,7 @@ VM_SERIES_F_AMD_V6 = [
     "Famsv6",  # 64 vCPUs, 512 GiB (8:1, high memory)
 ]
 
-# AMD v7 Compute Optimized (EPYC 9005 Turin @ 4.5 GHz) - Preview
+# AMD v7 Compute Optimized (EPYC 9005 Turin @ 4.5 GHz) - GA
 VM_SERIES_F_AMD_V7 = [
     "Fasv7",  # 80 vCPUs, 320 GiB (4:1)
     "Fadsv7",  # 80 vCPUs + local disk
@@ -684,7 +684,7 @@ VM_SERIES_D_AMD_V6 = [
     "Daldsv6",  # 96 vCPUs, 192 GiB (2:1)
 ]
 
-# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - Preview
+# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - GA
 VM_SERIES_D_AMD_V7 = [
     "Dasv7",
     "Dadsv7",  # 160 vCPUs, 640 GiB (4:1)
@@ -806,7 +806,7 @@ VM_SERIES_E_AMD_V6 = [
     "Eadsv6",  # 96 vCPUs, 672 GiB
 ]
 
-# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - Preview
+# AMD v7 (EPYC 9005 Turin @ 4.5 GHz) - GA
 VM_SERIES_E_AMD_V7 = [
     "Easv7",
     "Eadsv7",  # 160 vCPUs, 1024 GiB (8:1)
@@ -939,25 +939,48 @@ VM_SERIES_SPECIALTY = (
 # Complete catalog: every known series
 VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE + VM_SERIES_SPECIALTY
 
-# Latest generation only (v6/v7) - for fast queries
-VM_SERIES_LATEST = (
-    # D-series latest (Intel v6/v7 + AMD v6/v7 + ARM v6)
+# Latest GA generation only (v6 + AMD v7) - for fast queries
+VM_SERIES_LATEST_GA = (
+    # D-series latest GA (Intel v6 + AMD v6/v7 + ARM v6)
     VM_SERIES_D_INTEL_V6
-    + VM_SERIES_D_INTEL_V7
     + VM_SERIES_D_AMD_V6
     + VM_SERIES_D_AMD_V7
     + VM_SERIES_D_ARM_V6
     +
-    # F-series latest (AMD v6/v7)
+    # F-series latest GA (AMD v6/v7)
     VM_SERIES_F_AMD_V6
     + VM_SERIES_F_AMD_V7
     +
-    # E-series latest (Intel v6/v7 + AMD v6/v7 + ARM v6)
+    # E-series latest GA (Intel v6 + AMD v6/v7 + ARM v6)
     VM_SERIES_E_INTEL_V6
-    + VM_SERIES_E_INTEL_V7
     + VM_SERIES_E_AMD_V6
     + VM_SERIES_E_AMD_V7
     + VM_SERIES_E_ARM_V6
+)
+
+# Latest preview generation (Intel v7 Granite Rapids) - not yet GA
+VM_SERIES_LATEST_PREVIEW = (
+    VM_SERIES_D_INTEL_V7
+    + VM_SERIES_E_INTEL_V7
+)
+
+# All latest generation (GA + Preview)
+VM_SERIES_LATEST = VM_SERIES_LATEST_GA + VM_SERIES_LATEST_PREVIEW
+
+# Previous generation (v5) - one generation below latest
+VM_SERIES_PREVIOUS = (
+    # D-series v5 (Intel + AMD + ARM)
+    VM_SERIES_D_INTEL_V5
+    + VM_SERIES_D_AMD_V5
+    + VM_SERIES_D_ARM_V5
+    +
+    # F-series v2 (Intel, only non-legacy pre-v6)
+    VM_SERIES_F_INTEL
+    +
+    # E-series v5 (Intel + AMD + ARM)
+    VM_SERIES_E_INTEL_V5
+    + VM_SERIES_E_AMD_V5
+    + VM_SERIES_E_ARM_V5
 )
 
 
@@ -1166,7 +1189,17 @@ def main() -> None:
     parser.add_argument(
         "--latest",
         action="store_true",
-        help="Only v6/v7 series. Multi-query mode (1 page per series)",
+        help="Only latest GA series (v6 + AMD v7). Use --include-preview for Intel v7",
+    )
+    parser.add_argument(
+        "--include-preview",
+        action="store_true",
+        help="With --latest, also include preview series (Intel v7 Granite Rapids)",
+    )
+    parser.add_argument(
+        "--include-previous",
+        action="store_true",
+        help="With --latest, also include previous generation (v5 series)",
     )
     parser.add_argument(
         "--series",
@@ -1288,6 +1321,14 @@ def main() -> None:
         sys.exit(1)
     if getattr(args, "arm_only", False) and getattr(args, "exclude_arm", False):
         logging.error("Cannot specify both --arm-only and --exclude-arm")
+        sys.exit(1)
+
+    # Validate --include-preview and --include-previous require --latest
+    if getattr(args, "include_preview", False) and not getattr(args, "latest", False):
+        logging.error("--include-preview requires --latest")
+        sys.exit(1)
+    if getattr(args, "include_previous", False) and not getattr(args, "latest", False):
+        logging.error("--include-previous requires --latest")
         sys.exit(1)
     exclude_count = sum(
         [
@@ -1474,8 +1515,12 @@ def main() -> None:
             # Explicit series list - use multi-query mode
             series_list = [s.strip() for s in args.series.split(",") if s.strip()]
         elif getattr(args, "latest", False):
-            # Latest generation - use multi-query (specific known series)
-            series_list = list(VM_SERIES_LATEST)
+            # Latest generation - GA only by default, modifiers add more series
+            series_list = list(VM_SERIES_LATEST_GA)
+            if getattr(args, "include_preview", False):
+                series_list += VM_SERIES_LATEST_PREVIEW
+            if getattr(args, "include_previous", False):
+                series_list += VM_SERIES_PREVIOUS
         elif getattr(args, "general_compute", False):
             # General compute (D+F series) - use single query with client-side filter
             use_single_query = True
