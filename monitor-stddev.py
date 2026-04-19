@@ -493,6 +493,8 @@ class SftpSaver(ResultsSaver):
             f"Could not load SSH key from {key_path}: {last_error}"
         )
 
+    _CONNECT_TIMEOUT_SECONDS: float = 10.0
+
     def _connect(self) -> None:
         if self._sftp is not None:
             return
@@ -512,9 +514,16 @@ class SftpSaver(ResultsSaver):
             pkey=pkey,
             allow_agent=False,
             look_for_keys=False,
+            timeout=self._CONNECT_TIMEOUT_SECONDS,
+            banner_timeout=self._CONNECT_TIMEOUT_SECONDS,
+            auth_timeout=self._CONNECT_TIMEOUT_SECONDS,
         )
         self._ssh = client
         self._sftp = client.open_sftp()
+
+    def connect(self) -> None:
+        """Public wrapper: force an immediate connection for eager validation."""
+        self._connect()
 
     def _disconnect_quiet(self) -> None:
         if self._sftp is not None:
@@ -551,7 +560,7 @@ class SftpSaver(ResultsSaver):
             if not self._is_enoent(e):
                 print(f"Remove failed for {remote_path}: {e}", file=stderr)
 
-    def _put_bytes(self, data: bytes, remote_name: str) -> None:
+    def _put_bytes(self, data: bytes, remote_name: str) -> bool:
         safe_name = sanitize_filename(remote_name)
         remote_path = f"{self.remote_dir}/{safe_name}"
         tmp_path = f"{remote_path}.tmp"
@@ -567,7 +576,7 @@ class SftpSaver(ResultsSaver):
                 except (IOError, OSError):
                     self._safe_remove(remote_path)
                     self._sftp.rename(tmp_path, remote_path)
-                return
+                return True
             except (paramiko.SSHException, EOFError, OSError) as e:
                 # Best-effort cleanup of any partial .tmp left on the server.
                 self._safe_remove(tmp_path)
@@ -576,27 +585,25 @@ class SftpSaver(ResultsSaver):
                         f"Error uploading {remote_name} via SFTP: {e}",
                         file=stderr,
                     )
-                    return
+                    return False
                 self._disconnect_quiet()
+        return False
 
     def save_json(self, content: str, debug_output: bool) -> None:
-        self._put_bytes(content.encode("utf-8"), self.save_name_json)
-        if debug_output:
+        if self._put_bytes(content.encode("utf-8"), self.save_name_json) and debug_output:
             print(f"JSON uploaded via SFTP: {self.remote_dir}/{self.save_name_json}")
 
     def save_html(self, content: str, debug_output: bool) -> None:
-        self._put_bytes(content.encode("utf-8"), self.save_name_html)
-        if debug_output:
+        if self._put_bytes(content.encode("utf-8"), self.save_name_html) and debug_output:
             print(f"HTML uploaded via SFTP: {self.remote_dir}/{self.save_name_html}")
 
     def save_png(self, content: BytesIO, debug_output: bool) -> None:
-        self._put_bytes(content.getvalue(), self.save_name_png)
-        if debug_output:
+        if self._put_bytes(content.getvalue(), self.save_name_png) and debug_output:
             print(f"PNG uploaded via SFTP: {self.remote_dir}/{self.save_name_png}")
 
     def save_last_error_json(self, content: str, debug_output: bool) -> None:
-        self._put_bytes(content.encode("utf-8"), self.save_name_last_error_json)
-        if debug_output:
+        ok = self._put_bytes(content.encode("utf-8"), self.save_name_last_error_json)
+        if ok and debug_output:
             print(
                 f"Last error JSON uploaded via SFTP: "
                 f"{self.remote_dir}/{self.save_name_last_error_json}"
@@ -841,7 +848,7 @@ def monitor_website(
     if sftp_config:
         print(f"Using SFTP backend: {sftp_config['host']}:{sftp_config['remote_dir']}")
         try:
-            saver = SftpSaver(
+            sftp_saver = SftpSaver(
                 host=sftp_config["host"],
                 port=sftp_config["port"],
                 username=sftp_config["username"],
@@ -851,6 +858,9 @@ def monitor_website(
                 save_name_json=save_name_json,
                 save_name_html=save_name_html,
             )
+            sftp_saver.connect()
+            saver = sftp_saver
+            print("Connected to SFTP server.")
         except Exception as e:
             print(f"Failed to initialize SFTP saver: {e}", file=stderr)
             print("Falling back to local file storage.")
