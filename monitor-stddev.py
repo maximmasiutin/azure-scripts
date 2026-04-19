@@ -9,8 +9,12 @@ Copyright (C) 2025-2026 Maxim Masiutin. All rights reserved.
 
 See monitor-stddev.md for details.
 
-Install requirements: python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow
+Install: pip install curl_cffi azure-storage-blob azure-data-tables Pillow paramiko
 """
+# pylint: disable=broad-exception-caught,too-many-arguments,too-many-positional-arguments
+# pylint: disable=too-many-locals,too-many-branches,too-many-statements,too-many-nested-blocks
+# pylint: disable=too-many-instance-attributes,missing-class-docstring,missing-function-docstring
+# pylint: disable=import-outside-toplevel,too-many-lines,invalid-name
 
 from time import time, sleep
 from statistics import mean, stdev
@@ -21,7 +25,7 @@ from io import BytesIO
 from sys import stderr
 from collections import Counter
 from datetime import datetime, timezone, timedelta, date
-from typing import List, Optional, Union, Dict, Any
+from typing import Any
 from types import FrameType
 from abc import ABC, abstractmethod
 import html
@@ -38,6 +42,7 @@ from azure.storage.blob import (
     ContentSettings,
 )
 from azure.data.tables import TableClient
+import paramiko
 
 
 def validate_file_path(file_path: str, operation: str = "access") -> str:
@@ -94,14 +99,14 @@ STATUS_HEALTHY: int = 1
 MAX_HISTORY_SIZE: int = SAMPLE_SIZE_SECONDS * 3  # Keep some buffer to prevent memory leaks
 
 
-def cleanup_old_data(data_list: List[Any], max_size: int) -> None:
+def cleanup_old_data(data_list: list[Any], max_size: int) -> None:
     """Clean up old data to prevent memory leaks."""
     if len(data_list) > max_size:
         del data_list[: len(data_list) - max_size]
 
 
 def export_data(
-    data: List[Dict[str, Union[str, int]]],
+    data: list[dict[str, str | int]],
     filename: str,
     format_type: str,
     debug_output: bool,
@@ -140,7 +145,7 @@ def export_data(
                 all_keys: set[str] = set()
                 for d in data:
                     all_keys.update(d.keys())
-                fieldnames: List[str] = sorted(list(all_keys))
+                fieldnames: list[str] = sorted(list(all_keys))
 
                 # Use QUOTE_ALL to prevent CSV formula injection
                 with open(validated_path, "w", encoding="utf-8", newline="") as f:
@@ -158,14 +163,14 @@ def export_data(
 
 class DataStorage(ABC):
     def __init__(self) -> None:
-        self.historical_data: List[Dict[str, Union[str, int]]] = []
+        self.historical_data: list[dict[str, str | int]] = []
 
     @abstractmethod
-    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> list[dict[str, str | int]]:
         pass
 
     @abstractmethod
-    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
+    def append_metric(self, record: dict[str, str | int], debug_output: bool) -> None:
         pass
 
     @abstractmethod
@@ -184,7 +189,7 @@ class JsonFileStorage(DataStorage):
             raise
         self.historical_data = self.load_historical_data(debug_output=debug_output)
 
-    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> list[dict[str, str | int]]:
         # self.filename is already validated in __init__
         # Use basename to sanitize and break taint chain
         safe_dir = path.dirname(path.realpath(self.filename))
@@ -212,7 +217,7 @@ class JsonFileStorage(DataStorage):
             print(f"No existing historical data file found at {self.filename}. Starting fresh.")
         return []
 
-    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
+    def append_metric(self, record: dict[str, str | int], debug_output: bool) -> None:
         self.historical_data.append(record)
         try:
             with open(self.filename, "w", encoding="utf-8") as file:
@@ -242,10 +247,10 @@ class CosmosDBTableStorage(DataStorage):
             print(f"Failed to initialize Cosmos DB connection: {e}", file=stderr)
             raise
 
-    def load_historical_data(self, debug_output: bool) -> List[Dict[str, Union[str, int]]]:
+    def load_historical_data(self, debug_output: bool) -> list[dict[str, str | int]]:
         try:
             entities = list(self.table_client.list_entities())
-            metrics: List[Dict[str, Union[str, int]]] = [
+            metrics: list[dict[str, str | int]] = [
                 {
                     "timestamp": str(entity["RowKey"]),
                     "healthy": int(entity["PartitionKey"]),
@@ -258,7 +263,7 @@ class CosmosDBTableStorage(DataStorage):
             print(f"Error loading data from Cosmos DB: {e}", file=stderr)
             return []
 
-    def append_metric(self, record: Dict[str, Union[str, int]], debug_output: bool) -> None:
+    def append_metric(self, record: dict[str, str | int], debug_output: bool) -> None:
         entity = {
             "PartitionKey": str(record["healthy"]),
             "RowKey": str(record["timestamp"]),
@@ -297,6 +302,10 @@ class ResultsSaver(ABC):
     @abstractmethod
     def save_last_error_json(self, content: str, debug_output: bool) -> None:
         pass
+
+    def close(self) -> None:
+        """Release any resources held by the saver. Default: no-op."""
+        return None
 
 
 class FileSaver(ResultsSaver):
@@ -436,7 +445,166 @@ class AzureBlobSaver(ResultsSaver):
             print(f"Error uploading last error JSON to Azure: {e}", file=stderr)
 
 
-def save_json(file_name: str, data: List[Dict[str, Union[str, int]]]) -> None:
+class SftpSaver(ResultsSaver):
+    """Upload monitoring output over SFTP using SSH key authentication.
+
+    Uses a persistent paramiko Transport/SFTPClient session across calls
+    and writes atomically by uploading to a .tmp file and renaming.
+    Host keys are verified against a known_hosts file; unknown hosts are
+    rejected (no AutoAddPolicy).
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        key_path: str,
+        remote_dir: str,
+        known_hosts_path: str,
+        save_name_json: str,
+        save_name_html: str,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.username = username
+        self.key_path = key_path
+        self.remote_dir = remote_dir.rstrip("/")
+        self.known_hosts_path = known_hosts_path
+        self.save_name_json = save_name_json
+        self.save_name_html = save_name_html
+        self.save_name_png = f"{path.splitext(save_name_html)[0]}.png"
+        self.save_name_last_error_json = (
+            f"{path.splitext(save_name_json)[0]}-last_error.json"
+        )
+        self._transport: paramiko.Transport | None = None
+        self._sftp: paramiko.SFTPClient | None = None
+
+    @staticmethod
+    def _load_private_key(key_path: str) -> paramiko.PKey:
+        """Try Ed25519, then RSA, then ECDSA."""
+        last_error: Exception | None = None
+        for cls in (paramiko.Ed25519Key, paramiko.RSAKey, paramiko.ECDSAKey):
+            try:
+                return cls.from_private_key_file(key_path)  # type: ignore[no-any-return]
+            except paramiko.SSHException as e:
+                last_error = e
+        raise paramiko.SSHException(
+            f"Could not load SSH key from {key_path}: {last_error}"
+        )
+
+    def _lookup_host_key(self) -> paramiko.PKey:
+        host_keys = paramiko.HostKeys()
+        try:
+            host_keys.load(self.known_hosts_path)
+        except FileNotFoundError as e:
+            raise paramiko.SSHException(
+                f"known_hosts file not found: {self.known_hosts_path}"
+            ) from e
+        entry = host_keys.lookup(self.host)
+        if entry is None and self.port != 22:
+            entry = host_keys.lookup(f"[{self.host}]:{self.port}")
+        if entry is None:
+            raise paramiko.SSHException(
+                f"No host key entry for {self.host} in {self.known_hosts_path}. "
+                f"Add it via 'ssh-keyscan' before running."
+            )
+        key_type, key_obj = next(iter(entry.items()))
+        if key_obj is None:
+            raise paramiko.SSHException(
+                f"Empty host key entry for {self.host} ({key_type})"
+            )
+        return key_obj
+
+    def _connect(self) -> None:
+        if self._sftp is not None:
+            return
+        pkey = self._load_private_key(self.key_path)
+        host_key = self._lookup_host_key()
+        transport = paramiko.Transport((self.host, self.port))
+        transport.connect(username=self.username, pkey=pkey, hostkey=host_key)
+        self._transport = transport
+        self._sftp = paramiko.SFTPClient.from_transport(transport)
+
+    def _disconnect_quiet(self) -> None:
+        if self._sftp is not None:
+            try:
+                self._sftp.close()
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"SFTP close error (ignored): {e}", file=stderr)
+        if self._transport is not None:
+            try:
+                self._transport.close()
+            except Exception as e:  # pylint: disable=broad-except
+                print(f"Transport close error (ignored): {e}", file=stderr)
+        self._sftp = None
+        self._transport = None
+
+    def _safe_remove(self, remote_path: str) -> None:
+        """Remove a remote path if it exists; absence is acceptable."""
+        if self._sftp is None:
+            return
+        try:
+            self._sftp.remove(remote_path)
+        except (IOError, OSError) as e:
+            # File may not exist; that is fine since we only needed it gone.
+            if getattr(e, "errno", None) not in (None, 2):
+                print(f"Remove failed for {remote_path}: {e}", file=stderr)
+
+    def _put_bytes(self, data: bytes, remote_name: str) -> None:
+        safe_name = sanitize_filename(remote_name)
+        remote_path = f"{self.remote_dir}/{safe_name}"
+        tmp_path = f"{remote_path}.tmp"
+        for attempt in (1, 2):
+            try:
+                self._connect()
+                if self._sftp is None:
+                    raise paramiko.SSHException("SFTP session not established")
+                with self._sftp.file(tmp_path, "wb") as f:
+                    f.write(data)
+                try:
+                    self._sftp.posix_rename(tmp_path, remote_path)
+                except (IOError, OSError):
+                    self._safe_remove(remote_path)
+                    self._sftp.rename(tmp_path, remote_path)
+                return
+            except (paramiko.SSHException, EOFError, OSError) as e:
+                if attempt == 2:
+                    print(
+                        f"Error uploading {remote_name} via SFTP: {e}",
+                        file=stderr,
+                    )
+                    return
+                self._disconnect_quiet()
+
+    def save_json(self, content: str, debug_output: bool) -> None:
+        self._put_bytes(content.encode("utf-8"), self.save_name_json)
+        if debug_output:
+            print(f"JSON uploaded via SFTP: {self.remote_dir}/{self.save_name_json}")
+
+    def save_html(self, content: str, debug_output: bool) -> None:
+        self._put_bytes(content.encode("utf-8"), self.save_name_html)
+        if debug_output:
+            print(f"HTML uploaded via SFTP: {self.remote_dir}/{self.save_name_html}")
+
+    def save_png(self, content: BytesIO, debug_output: bool) -> None:
+        self._put_bytes(content.getvalue(), self.save_name_png)
+        if debug_output:
+            print(f"PNG uploaded via SFTP: {self.remote_dir}/{self.save_name_png}")
+
+    def save_last_error_json(self, content: str, debug_output: bool) -> None:
+        self._put_bytes(content.encode("utf-8"), self.save_name_last_error_json)
+        if debug_output:
+            print(
+                f"Last error JSON uploaded via SFTP: "
+                f"{self.remote_dir}/{self.save_name_last_error_json}"
+            )
+
+    def close(self) -> None:
+        self._disconnect_quiet()
+
+
+def save_json(file_name: str, data: list[dict[str, str | int]]) -> None:
     """Save JSON data to file."""
     try:
         with open(file_name, "w", encoding="utf-8") as file:
@@ -445,7 +613,7 @@ def save_json(file_name: str, data: List[Dict[str, Union[str, int]]]) -> None:
         print(f"Error saving JSON file {file_name}: {e}", file=stderr)
 
 
-def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[str, int]]]:
+def trim_data(data: list[dict[str, str | int]]) -> list[dict[str, str | int]]:
     """
     Remove one-minute-duplicates (entries with time difference < 59.99s)
     and keep only the last DATASET_LENGTH_MINUTES items.
@@ -454,11 +622,11 @@ def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[st
         return []
 
     try:
-        data_sorted: List[Dict[str, Union[str, int]]] = sorted(
+        data_sorted: list[dict[str, str | int]] = sorted(
             data, key=lambda x: datetime.fromisoformat(str(x["timestamp"]))
         )
-        filtered_data: List[Dict[str, Union[str, int]]] = []
-        last_timestamp: Optional[datetime] = None
+        filtered_data: list[dict[str, str | int]] = []
+        last_timestamp: datetime | None = None
 
         for entry in data_sorted:
             try:
@@ -482,7 +650,7 @@ def trim_data(data: List[Dict[str, Union[str, int]]]) -> List[Dict[str, Union[st
 
 
 def create_graphical_representation(
-    data_sorted: List[Dict[str, Union[str, int]]], font_file_name: Optional[str] = None
+    data_sorted: list[dict[str, str | int]], font_file_name: str | None = None
 ) -> BytesIO:
     """Create a memory buffer with a PNG image showing health status over time."""
     width: int = RESULTS_COUNT_MINUTES
@@ -506,7 +674,8 @@ def create_graphical_representation(
         ]
         img.putpalette(palette)
         pixels = img.load()
-        assert pixels is not None
+        if pixels is None:
+            raise RuntimeError("Failed to load pixel access object from image")
 
         # Initialize with gray background
         for x in range(width):
@@ -533,7 +702,7 @@ def create_graphical_representation(
         # Add date markers
         if font_file_name and path.exists(font_file_name):
             try:
-                font: Union[ImageFont.FreeTypeFont, ImageFont.ImageFont] = ImageFont.truetype(
+                font: ImageFont.FreeTypeFont | ImageFont.ImageFont = ImageFont.truetype(
                     font_file_name, size=40
                 )
             except Exception:
@@ -542,7 +711,7 @@ def create_graphical_representation(
             font = ImageFont.load_default()
 
         draw = ImageDraw.Draw(img)
-        previous_date: Optional[date] = None
+        previous_date: date | None = None
         for i, item in enumerate(data_sorted):
             try:
                 current_date = datetime.fromisoformat(str(item["timestamp"])).date()
@@ -580,9 +749,9 @@ def create_graphical_representation(
 
 
 def render_history_to_png_file(
-    data_sorted: List[Dict[str, Union[str, int]]],
+    data_sorted: list[dict[str, str | int]],
     filename_output_png: str,
-    font_file_name: Optional[str] = None,
+    font_file_name: str | None = None,
 ) -> None:
     """Render historical data as a PNG image and save it to a file."""
     # Validate file path to prevent path traversal
@@ -624,9 +793,9 @@ def get_firefox_impersonate() -> str:
 
 
 def build_request_headers(
-    user_agent: Optional[str], authorization: Optional[str]
-) -> Dict[str, str]:
-    headers: Dict[str, str] = {}
+    user_agent: str | None, authorization: str | None
+) -> dict[str, str]:
+    headers: dict[str, str] = {}
     if user_agent:
         # Strip "User-Agent:" prefix if present to avoid duplication
         ua_value = user_agent
@@ -644,31 +813,50 @@ def monitor_website(
     deviation_threshold: float,
     latency_threshold: float,
     error_rate_threshold: float,
-    azure_connection_string: Optional[str],
-    azure_container_name: Optional[str],
+    azure_connection_string: str | None,
+    azure_container_name: str | None,
+    sftp_config: dict[str, Any] | None,
     save_name_json: str,
     save_name_html: str,
     tz_offset: float,
     tz_caption: str,
-    user_agent: Optional[str],
-    authorization: Optional[str],
+    user_agent: str | None,
+    authorization: str | None,
     storage: DataStorage,
     probe_interval: int,
-    font_file_name: Optional[str],
+    font_file_name: str | None,
     debug_output: bool,
     use_session: bool,
-    page_title: Optional[str] = None,
+    page_title: str | None = None,
 ) -> None:
     """Main monitoring loop with improved memory management and error handling."""
-    effective_latencies: List[float] = []
-    adjusted_latencies: List[float] = []
-    response_status_codes: List[Optional[int]] = []
-    errors: List[bool] = []
+    effective_latencies: list[float] = []
+    adjusted_latencies: list[float] = []
+    response_status_codes: list[int | None] = []
+    errors: list[bool] = []
 
-    if azure_connection_string and azure_container_name:
+    saver: ResultsSaver
+    if sftp_config:
+        print(f"Using SFTP backend: {sftp_config['host']}:{sftp_config['remote_dir']}")
+        try:
+            saver = SftpSaver(
+                host=sftp_config["host"],
+                port=sftp_config["port"],
+                username=sftp_config["username"],
+                key_path=sftp_config["key_path"],
+                remote_dir=sftp_config["remote_dir"],
+                known_hosts_path=sftp_config["known_hosts_path"],
+                save_name_json=save_name_json,
+                save_name_html=save_name_html,
+            )
+        except Exception as e:
+            print(f"Failed to initialize SFTP saver: {e}", file=stderr)
+            print("Falling back to local file storage.")
+            saver = FileSaver(save_name_json, save_name_html)
+    elif azure_connection_string and azure_container_name:
         print("Connecting to Azure storage for results...")
         try:
-            saver: ResultsSaver = AzureBlobSaver(
+            saver = AzureBlobSaver(
                 azure_connection_string,
                 azure_container_name,
                 save_name_json,
@@ -698,10 +886,10 @@ def monitor_website(
         while True:
             start_time: float = time()
             next_probe_time: float = start_time + probe_interval
-            effective_latency: Optional[float] = None
-            adjusted_latency: Optional[float] = None
-            response_status_code: Optional[int] = None
-            error_happened: Optional[bool] = None
+            effective_latency: float | None = None
+            adjusted_latency: float | None = None
+            response_status_code: int | None = None
+            error_happened: bool | None = None
             probe_timestamp_dt: datetime = datetime.now(timezone.utc)
 
             try:
@@ -758,7 +946,7 @@ def monitor_website(
             current_probe_adjusted_latency: float = (
                 adjusted_latency if adjusted_latency is not None else request_timeout
             )
-            current_probe_response_status_code: Optional[int] = response_status_code
+            current_probe_response_status_code: int | None = response_status_code
 
             # Propagate results for each second in the interval
             errors.extend([current_probe_error] * probe_interval)
@@ -799,7 +987,7 @@ def monitor_website(
 
                 # Find most common non-200 status code in the analysis window
                 error_codes = [cd for cd in analysis_status_codes if cd is not None and cd != 200]
-                most_common_code: Optional[int] = 200
+                most_common_code: int | None = 200
                 if error_codes:
                     code_counts = Counter(error_codes)
                     most_common_code, _ = code_counts.most_common(1)[0]
@@ -823,7 +1011,7 @@ def monitor_website(
                     )
 
                 timestamp_str = probe_timestamp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-                json_data: Dict[str, Union[str, float, int]] = {
+                json_data: dict[str, str | float | int] = {
                     "timestamp": timestamp_str,
                     "min_effective_latency": round(min_eff, 6),
                     "max_effective_latency": round(max_eff, 6),
@@ -958,6 +1146,10 @@ def monitor_website(
     finally:
         if session:
             session.close()
+        try:
+            saver.close()
+        except Exception as e:  # pylint: disable=broad-except
+            print(f"Error closing saver: {e}", file=stderr)
 
 
 def append_health_metric(
@@ -967,14 +1159,14 @@ def append_health_metric(
     debug_output: bool,
 ) -> None:
     current_timestamp_str = probe_timestamp_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    metric_record: Dict[str, Union[str, int]] = {
+    metric_record: dict[str, str | int] = {
         "timestamp": current_timestamp_str,
         "healthy": health_status,
     }
     storage.append_metric(metric_record, debug_output=debug_output)
 
 
-def handle_sigterm(_signum: int, _frame: Optional[FrameType]) -> None:
+def handle_sigterm(_signum: int, _frame: FrameType | None) -> None:
     """Handle SIGTERM signal for graceful script exit."""
     print("\nMonitoring stopped by service signal (SIGTERM).")
     sys.exit(0)
@@ -983,8 +1175,8 @@ def handle_sigterm(_signum: int, _frame: Optional[FrameType]) -> None:
 def test_url(
     url: str,
     request_timeout: float,
-    user_agent: Optional[str],
-    authorization: Optional[str],
+    user_agent: str | None,
+    authorization: str | None,
     use_session: bool,
 ) -> int:
     """Test URL connectivity and detect Cloudflare blocking. Returns 0 on success, 1 on failure."""
@@ -1126,6 +1318,42 @@ def main() -> None:
         type=str,
         default="$web",
         help="Azure Blob container name",
+    )
+    parser.add_argument(
+        "--sftp-host",
+        type=str,
+        default=None,
+        help="SFTP server hostname (enables SFTP backend)",
+    )
+    parser.add_argument(
+        "--sftp-port",
+        type=int,
+        default=22,
+        help="SFTP server port (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--sftp-user",
+        type=str,
+        default=None,
+        help="SFTP username",
+    )
+    parser.add_argument(
+        "--sftp-key",
+        type=str,
+        default=None,
+        help="Path to SSH private key file (Ed25519, RSA, or ECDSA)",
+    )
+    parser.add_argument(
+        "--sftp-remote-dir",
+        type=str,
+        default=None,
+        help="Remote directory for uploads (e.g. /public_html/www_githubmonitoring)",
+    )
+    parser.add_argument(
+        "--sftp-known-hosts",
+        type=str,
+        default=path.expanduser("~/.ssh/known_hosts"),
+        help="Path to known_hosts file for host key verification (default: %(default)s)",
     )
     parser.add_argument(
         "--save-name-json",
@@ -1299,6 +1527,21 @@ def main() -> None:
             print("Error: Probe interval must be between 1 and 60 seconds.", file=stderr)
             sys.exit(1)
 
+        sftp_config: dict[str, Any] | None = None
+        if args.sftp_host:
+            if not (args.sftp_user and args.sftp_key and args.sftp_remote_dir):
+                parser.error(
+                    "--sftp-host requires --sftp-user, --sftp-key, --sftp-remote-dir"
+                )
+            sftp_config = {
+                "host": args.sftp_host,
+                "port": args.sftp_port,
+                "username": args.sftp_user,
+                "key_path": args.sftp_key,
+                "remote_dir": args.sftp_remote_dir,
+                "known_hosts_path": args.sftp_known_hosts,
+            }
+
         print(f"Starting website monitoring for: {args.url}")
         monitor_website(
             url=args.url,
@@ -1308,6 +1551,7 @@ def main() -> None:
             error_rate_threshold=args.error_rate_threshold,
             azure_connection_string=args.azure_blob_storage_connection_string,
             azure_container_name=args.azure_blob_storage_container_name,
+            sftp_config=sftp_config,
             save_name_json=args.save_name_json,
             save_name_html=args.save_name_html,
             tz_offset=args.tz_offset,
