@@ -477,7 +477,7 @@ class SftpSaver(ResultsSaver):
         self.save_name_last_error_json = (
             f"{path.splitext(save_name_json)[0]}-last_error.json"
         )
-        self._transport: paramiko.Transport | None = None
+        self._ssh: paramiko.SSHClient | None = None
         self._sftp: paramiko.SFTPClient | None = None
 
     @staticmethod
@@ -493,38 +493,28 @@ class SftpSaver(ResultsSaver):
             f"Could not load SSH key from {key_path}: {last_error}"
         )
 
-    def _lookup_host_key(self) -> paramiko.PKey:
-        host_keys = paramiko.HostKeys()
-        try:
-            host_keys.load(self.known_hosts_path)
-        except FileNotFoundError as e:
-            raise paramiko.SSHException(
-                f"known_hosts file not found: {self.known_hosts_path}"
-            ) from e
-        entry = host_keys.lookup(self.host)
-        if entry is None and self.port != 22:
-            entry = host_keys.lookup(f"[{self.host}]:{self.port}")
-        if entry is None:
-            raise paramiko.SSHException(
-                f"No host key entry for {self.host} in {self.known_hosts_path}. "
-                f"Add it via 'ssh-keyscan' before running."
-            )
-        key_type, key_obj = next(iter(entry.items()))
-        if key_obj is None:
-            raise paramiko.SSHException(
-                f"Empty host key entry for {self.host} ({key_type})"
-            )
-        return key_obj
-
     def _connect(self) -> None:
         if self._sftp is not None:
             return
         pkey = self._load_private_key(self.key_path)
-        host_key = self._lookup_host_key()
-        transport = paramiko.Transport((self.host, self.port))
-        transport.connect(username=self.username, pkey=pkey, hostkey=host_key)
-        self._transport = transport
-        self._sftp = paramiko.SFTPClient.from_transport(transport)
+        client = paramiko.SSHClient()
+        try:
+            client.load_host_keys(self.known_hosts_path)
+        except FileNotFoundError as e:
+            raise paramiko.SSHException(
+                f"known_hosts file not found: {self.known_hosts_path}"
+            ) from e
+        client.set_missing_host_key_policy(paramiko.RejectPolicy())
+        client.connect(
+            hostname=self.host,
+            port=self.port,
+            username=self.username,
+            pkey=pkey,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        self._ssh = client
+        self._sftp = client.open_sftp()
 
     def _disconnect_quiet(self) -> None:
         if self._sftp is not None:
@@ -532,23 +522,33 @@ class SftpSaver(ResultsSaver):
                 self._sftp.close()
             except Exception as e:  # pylint: disable=broad-except
                 print(f"SFTP close error (ignored): {e}", file=stderr)
-        if self._transport is not None:
+        if self._ssh is not None:
             try:
-                self._transport.close()
+                self._ssh.close()
             except Exception as e:  # pylint: disable=broad-except
-                print(f"Transport close error (ignored): {e}", file=stderr)
+                print(f"SSH close error (ignored): {e}", file=stderr)
         self._sftp = None
-        self._transport = None
+        self._ssh = None
+
+    @staticmethod
+    def _is_enoent(exc: BaseException) -> bool:
+        """Return True iff the exception indicates 'no such file'."""
+        err_no = getattr(exc, "errno", None)
+        if err_no is None:
+            for arg in getattr(exc, "args", ()):
+                if isinstance(arg, int):
+                    err_no = arg
+                    break
+        return err_no == 2
 
     def _safe_remove(self, remote_path: str) -> None:
-        """Remove a remote path if it exists; absence is acceptable."""
+        """Remove a remote path, ignoring only the 'no such file' case."""
         if self._sftp is None:
             return
         try:
             self._sftp.remove(remote_path)
         except (IOError, OSError) as e:
-            # File may not exist; that is fine since we only needed it gone.
-            if getattr(e, "errno", None) not in (None, 2):
+            if not self._is_enoent(e):
                 print(f"Remove failed for {remote_path}: {e}", file=stderr)
 
     def _put_bytes(self, data: bytes, remote_name: str) -> None:
@@ -569,6 +569,8 @@ class SftpSaver(ResultsSaver):
                     self._sftp.rename(tmp_path, remote_path)
                 return
             except (paramiko.SSHException, EOFError, OSError) as e:
+                # Best-effort cleanup of any partial .tmp left on the server.
+                self._safe_remove(tmp_path)
                 if attempt == 2:
                     print(
                         f"Error uploading {remote_name} via SFTP: {e}",

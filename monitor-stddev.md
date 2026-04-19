@@ -20,16 +20,17 @@ The program periodically checks the specified website, calculates relevant stati
 - `azure-storage-blob` package
 - `azure-data-tables` package
 - `Pillow` package (PIL)
+- `paramiko` package (optional, required for the SFTP upload backend)
 - `statistics` package (standard library)
 - `argparse` package (standard library)
 
-You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow`
+You can install the requirements using `python -m pip install curl_cffi azure-storage-blob azure-data-tables Pillow paramiko`
 
 ## Installation
 
 Install the required Python packages using `pip`:
 ```sh
-pip install curl_cffi azure-storage-blob azure-data-tables Pillow
+pip install curl_cffi azure-storage-blob azure-data-tables Pillow paramiko
 ```
 or
 ```sh
