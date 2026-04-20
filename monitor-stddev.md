@@ -105,7 +105,7 @@ python monitor-stddev.py --url "https://example.com" --timeout 10 --deviation-th
 
 ### Output example
 
-You can see the real-time monitoring results of github.com at https://web.archive.org/web/20250623162753/http://web.archive.org/screenshot/https://githubmonitoring.azureedge.net/
+You can see the real-time monitoring results of github.com at https://githubmonitoring.masiutin.net/ or an archived record https://web.archive.org/web/20250623162753/http://web.archive.org/screenshot/https://githubmonitoring.azureedge.net/
 
 An example of an unstable website can be seen at https://web.archive.org/web/20250623162756/http://web.archive.org/screenshot/https://monitoring4.azureedge.net/
 
