@@ -668,7 +668,9 @@ VM_SERIES_D_INTEL_V6 = [
     "Dldsv6",  # 128 vCPUs, 256 GiB (2:1)
 ]
 
-# Intel v7 (Xeon 6 Granite Rapids) - Preview
+# Intel v7 (Xeon 6 Granite Rapids) - GA
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dsv7-series
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/ddsv7-series
 VM_SERIES_D_INTEL_V7 = [
     "Dsv7",
     "Ddsv7",  # (4:1)
@@ -792,7 +794,8 @@ VM_SERIES_E_INTEL_V6 = [
     "Ebdsv6",  # 128 vCPUs, storage optimized
 ]
 
-# Intel v7 (Xeon 6 Granite Rapids) - Preview
+# Intel v7 (Xeon 6 Granite Rapids) - GA
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/memory-optimized/esv7-series
 VM_SERIES_E_INTEL_V7 = [
     "Esv7",
     "Edsv7",  # (8:1)
@@ -885,6 +888,11 @@ VM_SERIES_M = [
 ]
 
 # HPC (H-family)
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/high-performance-compute/hb-family
+# Note: HBv5 (https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/high-performance-compute/hbv5-series)
+# is intentionally not listed. Its Azure productName is "HBrsv5" (no " Series" suffix),
+# so the multi-query path's exact-match filter ("Virtual Machines {name} Series") does
+# not match. armSkuName-based --vm-sizes queries can still target HB*rs_v5 directly.
 VM_SERIES_HPC = [
     "HCS",
     "HXrs",
@@ -892,6 +900,8 @@ VM_SERIES_HPC = [
 ]
 
 # Confidential Computing (DC-family)
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/general-purpose/dcesv6-series
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/memory-optimized/ec-family
 VM_SERIES_DC = [
     "DCsv3",
     "DCdsv3",
@@ -899,17 +909,28 @@ VM_SERIES_DC = [
     "DCedsv5",
     "DCasv6",
     "DCadsv6",
+    "DCesv6",  # Intel TDX confidential v6, GA 2025
+    "DCedsv6",  # Intel TDX confidential v6 with local disk, GA 2025
     "DCasccv5",
     "DCadsccv5",
     "ECasv6",
     "ECadsv6",
     "ECesv5",
     "ECedsv5",
+    "ECesv6",  # Intel TDX confidential memory-optimized v6, GA 2025
+    "ECedsv6",  # Intel TDX confidential memory-optimized v6 with local disk, GA 2025
     "ECasccv5",
     "ECadsccv5",
 ]
 
 # GPU (N-family)
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nd-family
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nc-family
+# https://learn.microsoft.com/en-us/azure/virtual-machines/sizes/gpu-accelerated/nv-family
+# Note: series names below must match Azure productName (sans "Virtual Machines " prefix
+# and " Series" suffix). Some newer GPU SKUs use non-standard productName patterns
+# (e.g. "NDMI300Xv5 Srs", "NDsrGB200NDRv6") and therefore are listed in comments rather
+# than as queryable series entries until the multi-query path supports them.
 VM_SERIES_GPU = [
     "NCSv3",
     "NCasT4v3",
@@ -918,11 +939,20 @@ VM_SERIES_GPU = [
     "NVSv3",
     "NVadsA10v5",
     "NVasv4",
+    "NVadsV710v5",  # AMD Radeon Pro V710, GA 2025
     "NGadsV620v1",
-    "NDamsr A100v4",
+    "NDamsr A100v4",  # NDm A100 v4 (80 GB Ampere). Note: Azure productName is
+    # "NDamsr A100 v4 Series" (with a space before v4), so the exact-match
+    # filter does not return rows; kept here for catalog completeness and
+    # vendor-filter compatibility. Use --vm-sizes ND96amsr_A100_v4 for pricing.
     "NDsH100v5",
     "NDsfH100v5",
     "NDsrH200v5",
+    # Newer SKUs with non-standard productName patterns (do not match
+    # 'Virtual Machines {name} Series' exact filter):
+    # - "NDMI300Xv5"  productName "NDMI300Xv5 Srs" (AMD MI300X, GA)
+    # - "NDsrGB200NDRv6"  productName mixed (NVIDIA GB200 NVL72, GA Dec 2025)
+    # - "Mdsv3 Medium Memory"  M-family v3 (Sapphire Rapids), GA
 ]
 
 # All specialty series combined
@@ -939,10 +969,12 @@ VM_SERIES_SPECIALTY = (
 # Complete catalog: every known series
 VM_SERIES_ALL = VM_SERIES_BURSTABLE + VM_SERIES_NON_BURSTABLE + VM_SERIES_SPECIALTY
 
-# Latest GA generation only (v6 + AMD v7) - for fast queries
+# Latest GA generation only (v6 + AMD v7 + Intel v7) - for fast queries
+# Intel v7 (Granite Rapids) reached GA in 2026; previously listed in PREVIEW.
 VM_SERIES_LATEST_GA = (
-    # D-series latest GA (Intel v6 + AMD v6/v7 + ARM v6)
+    # D-series latest GA (Intel v6/v7 + AMD v6/v7 + ARM v6)
     VM_SERIES_D_INTEL_V6
+    + VM_SERIES_D_INTEL_V7
     + VM_SERIES_D_AMD_V6
     + VM_SERIES_D_AMD_V7
     + VM_SERIES_D_ARM_V6
@@ -951,18 +983,17 @@ VM_SERIES_LATEST_GA = (
     VM_SERIES_F_AMD_V6
     + VM_SERIES_F_AMD_V7
     +
-    # E-series latest GA (Intel v6 + AMD v6/v7 + ARM v6)
+    # E-series latest GA (Intel v6/v7 + AMD v6/v7 + ARM v6)
     VM_SERIES_E_INTEL_V6
+    + VM_SERIES_E_INTEL_V7
     + VM_SERIES_E_AMD_V6
     + VM_SERIES_E_AMD_V7
     + VM_SERIES_E_ARM_V6
 )
 
-# Latest preview generation (Intel v7 Granite Rapids) - not yet GA
-VM_SERIES_LATEST_PREVIEW = (
-    VM_SERIES_D_INTEL_V7
-    + VM_SERIES_E_INTEL_V7
-)
+# Latest preview generation - currently empty (Intel v7 promoted to GA)
+# Kept for forward compatibility with --include-preview flag
+VM_SERIES_LATEST_PREVIEW: list[str] = []
 
 # All latest generation (GA + Preview)
 VM_SERIES_LATEST = VM_SERIES_LATEST_GA + VM_SERIES_LATEST_PREVIEW
@@ -1189,12 +1220,12 @@ def main() -> None:
     parser.add_argument(
         "--latest",
         action="store_true",
-        help="Only latest GA series (v6 + AMD v7). Use --include-preview for Intel v7",
+        help="Only latest GA series (v6 + Intel/AMD v7). Intel v7 is now GA",
     )
     parser.add_argument(
         "--include-preview",
         action="store_true",
-        help="With --latest, also include preview series (Intel v7 Granite Rapids)",
+        help="Compatibility flag: currently a no-op (no series in preview list)",
     )
     parser.add_argument(
         "--include-previous",
