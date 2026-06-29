@@ -9,7 +9,7 @@
   `python vm-spot-price.py --min-cores 2 --max-cores 64 --general-compute --return-region` (~130 pages)
   `python vm-spot-price.py --all-vm-series --cpu 64` (~140 pages)
   `python vm-spot-price.py --windows --cpu 4 --sku-pattern "B#s_v2"` (~1 page, Windows)
-1. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:
+2. **blob-storage-price.py**: Returns Azure regions sorted by average blob storage price (page/block, premium/general, etc.) to find cheapest cloud storage price. Examples of use:
   `python blob-storage-price.py`
   `python blob-storage-price.py --blob-types "General Block Blob v2"`
   `python blob-storage-price.py --blob-types "General Block Blob v2, Premium Block Blob"`
@@ -17,20 +17,20 @@
 ## Monitoring
 
 1. **monitor-eviction.py**: Monitors a spot VM to determine whether it is being evicted and stops services (Linux or Windows) before the VM instance is stopped. Supports custom hook scripts for pre-eviction actions.
-1. **monitor-credits.py**: Monitors Azure B-series (burstable) VM CPU credits and manages services based on credit level. Stops services when credits fall below a low threshold, restarts them when credits recover above a high threshold. Uses hysteresis to prevent rapid stop/start cycling.
-1. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md).
+2. **monitor-credits.py**: Monitors Azure B-series (burstable) VM CPU credits and manages services based on credit level. Stops services when credits fall below a low threshold, restarts them when credits recover above a high threshold. Uses hysteresis to prevent rapid stop/start cycling.
+3. **monitor-stddev.py**: A stability-focused website monitor that uses standard deviation of latency to detect jitter and performance degradation, not just outages. Publishes results to Azure/local files. See [monitor-stddev.md](monitor-stddev.md). You can see the real-time monitoring results of github.com at <https://githubmonitoring.masiutin.net/> or an archived earlier records at <https://web.archive.org/web/*/githubmonitoring.masiutin.net> or earlier archive at <https://web.archive.org/web/20250623162753/http://web.archive.org/screenshot/https://githubmonitoring.azureedge.net/>
 
 ## VM Provisioning
 
 1. **create-spot-vms.ps1**: Creates Azure Spot VMs with any Linux image (Ubuntu by default). Supports full ARM64, dynamic Ubuntu image discovery, NAT Gateway, and custom images via `-ImagePublisher`/`-ImageOffer`/`-ImageSku` for any Linux distro. Supports `-UseLTS` with `-LTSOffset` for older LTS selection.
-1. **create-192core-vm.ps1**: Wrapper script that orchestrates vm-spot-price.py and create-spot-vms.ps1 to create a 192-core Azure Spot VM. Uses vm-spot-price.py to auto-find the cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions, then calls create-spot-vms.ps1 to provision the VM. Shows progress indicator. Supports `-WhatIf` for dry run.
+2. **create-192core-vm.ps1**: Wrapper script that orchestrates vm-spot-price.py and create-spot-vms.ps1 to create a 192-core Azure Spot VM. Uses vm-spot-price.py to auto-find the cheapest VM size and region, checks quota in 40 regions before querying prices, excludes restricted regions, then calls create-spot-vms.ps1 to provision the VM. Shows progress indicator. Supports `-WhatIf` for dry run.
 
 ## Infrastructure Management
 
 1. **set-storage-account-content-headers.ps1**: Sets Azure static website files content headers (such as Content-Type or Cache-Control).
-1. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
-1. **find-phantom-resource.ps1**: Finds and deletes hidden/phantom resources blocking resource group deletion. Uses ARM REST API directly to bypass JMESPath case-sensitivity bugs. Modes: single-RG (`-ResourceGroup`, supports `-Delete -Force` and optional `-DeleteResourceGroup`) or subscription-wide scan (`-SubScan [-Region X]`, scan-only). Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"` or `pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"`
-1. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
+2. **register-preview-features.ps1**: Manages Azure preview feature flags. Lists, registers, unregisters, and exports feature states.
+3. **find-phantom-resource.ps1**: Finds and deletes hidden/phantom resources blocking resource group deletion. Uses ARM REST API directly to bypass JMESPath case-sensitivity bugs. Modes: single-RG (`-ResourceGroup`, supports `-Delete -Force` and optional `-DeleteResourceGroup`) or subscription-wide scan (`-SubScan [-Region X]`, scan-only). Usage: `pwsh find-phantom-resource.ps1 -ResourceGroup "MyRG"` or `pwsh find-phantom-resource.ps1 -SubScan -Region "centralindia"`
+4. **azure-swap.bash**: A tool that looks for local temporary disk and creates a swap file of 90% of that storage, leaving 10% available. It creates an autostart service in case Azure removes the disk when the machine is stopped.
 
 ## Details
 

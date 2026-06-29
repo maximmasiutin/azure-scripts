@@ -1,11 +1,13 @@
 # Standard Deviation Health Status Monitor
 
 ## Overview
+
 The **Standard Deviation Health Status Monitor** is an advanced website monitoring tool designed to measure not just availability, but **stability**. Unlike simple monitors that only check if a site is "up" or "down", this tool calculates the **standard deviation of latency** to detect inconsistent performance (jitter). High standard deviation often precedes outages or indicates a degraded user experience that averages alone would miss.
 
 The program periodically checks the specified website, calculates relevant statistics, and determines the health status based on predefined thresholds. Additionally, it supports storing the results in Azure Blob Storage.
 
 ## Features
+
 - **Stability Analysis**: Calculates the standard deviation of latency to identify unstable responses.
 - Monitors website latency and error rates.
 - Calculates average and standard deviation of latency.
@@ -15,6 +17,7 @@ The program periodically checks the specified website, calculates relevant stati
 - Customizable user agent for website requests.
 
 ## Requirements
+
 - Python 3.12+
 - `curl_cffi` package (impersonates Chrome TLS fingerprint to avoid Cloudflare bot detection)
 - `azure-storage-blob` package
@@ -29,15 +32,19 @@ You can install the requirements using `python -m pip install curl_cffi azure-st
 ## Installation
 
 Install the required Python packages using `pip`:
+
 ```sh
 pip install curl_cffi azure-storage-blob azure-data-tables Pillow paramiko
 ```
+
 or
+
 ```sh
 pip install -r monitor-stddev-requirements.txt
 ```
 
 On Ubuntu/Debian with system Python (23.04+):
+
 ```sh
 sudo pip3 install --break-system-packages -r monitor-stddev-requirements.txt
 ```
@@ -53,18 +60,21 @@ python monitor-stddev.py --url "https://example.com" --test
 ```
 
 With custom timeout:
+
 ```sh
 python monitor-stddev.py --url "https://example.com" --test --timeout 5
 ```
 
 The test performs a single HTTP request and reports:
+
 - HTTP status code and latency
 - Content-Type and Content-Length headers
 - Detection of Cloudflare blocking or CAPTCHA challenges
 - Exit code: 0 (success) or 1 (blocked/error)
 
 Example output for successful test:
-```
+
+```text
 Testing: https://example.com
 Timeout: 2.0s
 ------------------------------------------------------------
@@ -77,7 +87,8 @@ Result: OK - monitoring should work
 ```
 
 Example output for blocked site:
-```
+
+```text
 Testing: https://example.com
 Timeout: 2.0s
 ------------------------------------------------------------
@@ -92,22 +103,26 @@ Solution: Whitelist monitoring server IP in Cloudflare firewall rules
 ```
 
 ## Using
+
 ### Calling format
+
 To run the program, use the following command with the appropriate parameters:
+
 ```sh
 python monitor-stddev.py --url <website_url> --timeout <request_timeout> --deviation-threshold <std_dev_threshold> --latency-threshold <latency_threshold> --error-rate-threshold <error_rate_threshold> --azure-connection-string <connection_string> --azure-container-name <container_name> --save-name-json <json_file_name> --save-name-html <html_file_name> --tz-offset <timezone_offset> --tz-caption <timezone_caption> --user-agent <user_agent_string>
 ```
 
 ### Calling example
+
 ```sh
 python monitor-stddev.py --url "https://example.com" --timeout 10 --deviation-threshold 0.5 --latency-threshold 2.0 --error-rate-threshold 5.0 --azure-connection-string "your_azure_connection_string" --azure-container-name "your_container_name" --save-name-json "status.json" --save-name-html "status.html" --tz-offset 2 --tz-caption "EET" --user-agent "MyWebsiteMonitor"
 ```
 
 ### Output example
 
-You can see the real-time monitoring results of github.com at https://githubmonitoring.masiutin.net/ or an archived record https://web.archive.org/web/20250623162753/http://web.archive.org/screenshot/https://githubmonitoring.azureedge.net/
+You can see the real-time monitoring results of github.com at <https://githubmonitoring.masiutin.net/> or an archived earlier records at <https://web.archive.org/web/*/githubmonitoring.masiutin.net> or earlier archive at <https://web.archive.org/web/20250623162753/http://web.archive.org/screenshot/https://githubmonitoring.azureedge.net/>
 
-An example of an unstable website can be seen at https://web.archive.org/web/20250623162756/http://web.archive.org/screenshot/https://monitoring4.azureedge.net/
+An example of an unstable website can be seen at <https://web.archive.org/web/20250623162756/http://web.archive.org/screenshot/https://monitoring4.azureedge.net/>
 
 ## Parameters
 
@@ -165,6 +180,6 @@ An example of an unstable website can be seen at https://web.archive.org/web/202
 
 - `--debug`: Enable debug output.
 
-
 ## License
+
 This project is licensed under the GPLv3 license - see the LICENSE file for details.
