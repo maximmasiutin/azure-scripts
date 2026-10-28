@@ -20,7 +20,7 @@ from time import time, sleep
 from statistics import mean, stdev
 from argparse import ArgumentParser, Namespace
 from json import load, dump, dumps, JSONDecodeError
-from os import path
+from os import path, environ
 from io import BytesIO
 from sys import stderr
 from collections import Counter
@@ -1392,8 +1392,10 @@ def main() -> None:
     parser.add_argument(
         "--cosmosdb-connection-string",
         type=str,
-        default=None,
-        help="Cosmos DB connection string for Table API storage",
+        default=environ.get("MONITOR_COSMOSDB_CONNECTION_STRING"),
+        help="Cosmos DB connection string for Table API storage "
+        "(default: the MONITOR_COSMOSDB_CONNECTION_STRING environment variable, "
+        "which keeps the key out of the process command line)",
     )
     parser.add_argument(
         "--cosmosdb-table-name",
